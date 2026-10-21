@@ -14,3 +14,7 @@ separate local git commit.
 | 06 | Versioning | [06-versioning/status.md](06-versioning/status.md) |
 | 07 | License acknowledgements | [07-licenses/status.md](07-licenses/status.md) |
 | 08 | SSO + access-controlled data API | [08-sso-access-control/status.md](08-sso-access-control/status.md) |
+
+All eight features: COMPLETE (2026-10-21). Test suite: 49 passed, 1 skipped (OCR test needs tesseract).
+Commit order: 01 → 02 → 03 → 04 → 06 → 05 → 08 → 07 (versioning before MCP so MCP could expose restore;
+licenses last so the inventory covers every dependency).
