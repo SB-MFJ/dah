@@ -344,3 +344,95 @@ registerView("tables", {
     for (const panel of TablePanels) main.append(await panel.render(t, () => route()));
   },
 });
+
+/* ================================================================ Versioning panels */
+
+function restoreDialog(title, text, onConfirm) {
+  const comment = h("input", { placeholder: "comment (optional)" });
+  const dlg = h("dialog", {}, h("form", { method: "dialog" }, h("h2", { text: title }), h("p", { text }), comment,
+    h("menu", {}, h("button", { value: "cancel", text: "Cancel" }), h("button", { class: "primary", value: "ok", text: "Restore" }))));
+  document.body.append(dlg);
+  dlg.addEventListener("close", async () => { if (dlg.returnValue === "ok") await onConfirm(comment.value || null); dlg.remove(); });
+  dlg.showModal();
+}
+
+DocumentPanels.push({
+  title: "Versions",
+  async render(d, reload) {
+    const r = await api(`/api/documents/${d.id}/versions`);
+    const detail = h("div", { class: "stack" });
+    async function compare(v) {
+      const df = await api(`/api/documents/${d.id}/diff?a=${v.version}&b=${r.current_version}`);
+      const md = df.metadata_diff;
+      clear(detail).append(
+        h("h3", { text: `v${v.version} → current v${r.current_version}${df.same_content ? " (identical bytes)" : ""}` }),
+        df.text_diff ? h("pre", { text: df.text_diff }) : h("p", { class: "muted", text: "Text is identical." }),
+        h("h3", { text: "Metadata changes" }),
+        h("pre", { text: JSON.stringify(md, null, 2) }));
+    }
+    async function view(v) {
+      const full = await api(`/api/documents/${d.id}/versions/${v.version}`);
+      clear(detail).append(h("h3", { text: `v${v.version} text` }), h("pre", { text: full.text || "(no text)" }));
+    }
+    const actions = (v) => h("div", { class: "row" },
+      h("button", { text: "View", onclick: (e) => { e.stopPropagation(); view(v); } }),
+      h("button", { text: "Diff", disabled: v.is_current, onclick: (e) => { e.stopPropagation(); compare(v); } }),
+      h("button", { text: "Download", onclick: (e) => { e.stopPropagation(); downloadDocument(d.id, v.version, v.filename); } }),
+      h("button", { class: "primary", text: "Restore", disabled: v.is_current, onclick: (e) => {
+        e.stopPropagation();
+        restoreDialog(`Restore v${v.version}?`, `Creates v${d.latest_version + 1} as a copy of v${v.version} and makes it current. Nothing is deleted.`,
+          async (comment) => { await guarded(() => api(`/api/documents/${d.id}/versions/${v.version}/restore`, { method: "POST", body: { comment } }), `Restored v${v.version}`); reload(); });
+      } }));
+    return h("div", { class: "stack" },
+      dataTable([{ key: "version", label: "Version" }, { key: "status", label: "Status" }, { key: "filename", label: "File" }, { key: "size", label: "Size", num: true },
+        { key: "comment", label: "Comment" }, { key: "created_at", label: "Created" }, { key: "actions", label: "" }],
+        r.items.map((v) => ({ ...v, actions: actions(v) })),
+        { render: {
+          version: (x, v) => h("span", {}, `v${x} `, v.is_current ? badge("current") : null, v.restored_from ? h("span", { class: "muted", text: `(from v${v.restored_from})` }) : null),
+          status: (x) => badge(x), size: (x) => fmtBytes(x), created_at: (x) => fmtDate(x), actions: (x) => x } }),
+      detail);
+  },
+});
+
+PipelinePanels.push({
+  async render({ pipeline: p, editor, reload }) {
+    const r = await api(`/api/pipelines/${encodeURIComponent(p.name)}/versions`);
+    const detail = h("div", { class: "stack" });
+    function show(v) {
+      clear(detail).append(
+        h("div", { class: "row" }, h("h3", { text: `v${v.version} vs editor` }), h("span", { class: "spacer" }),
+          h("button", { text: "Load into editor (unsaved)", onclick: () => { editor.setValue(v.code); toast(`Loaded v${v.version}; save to make it a new version`); } }),
+          h("button", { class: "primary", text: "Restore as current", disabled: v.is_current, onclick: () =>
+            restoreDialog(`Restore v${v.version}?`, `Creates a new version identical to v${v.version} (code, kind, trigger, output table, params).`,
+              async (comment) => { await guarded(() => api(`/api/pipelines/${encodeURIComponent(p.name)}/versions/${v.version}/restore`, { method: "POST", body: { comment } }), `Restored v${v.version}`); reload(); }) })),
+        h("p", { class: "muted", text: `${v.kind} · ${v.trigger}${v.output_table ? " → " + v.output_table : ""} · ${fmtDate(v.created_at)}${v.comment ? " · " + v.comment : ""}` }),
+        diffView(editor.getValue(), v.code));
+    }
+    return h("section", { class: "panel stack" }, h("h3", { text: `Version history (${r.items.length})` }),
+      dataTable([{ key: "version", label: "Version" }, { key: "comment", label: "Comment" }, { key: "created_by", label: "By" }, { key: "created_at", label: "Saved" }],
+        r.items, { onRow: show, render: {
+          version: (x, v) => h("span", {}, `v${x} `, v.is_current ? badge("current") : null, v.restored_from ? h("span", { class: "muted", text: `(from v${v.restored_from})` }) : null),
+          created_at: (x) => fmtDate(x) } }),
+      detail);
+  },
+});
+
+TablePanels.push({
+  async render(t, reload) {
+    const r = await api(`/api/tables/${encodeURIComponent(t.name)}/versions`);
+    const preview = h("div", { class: "scroll" });
+    async function show(v) {
+      const q = await api("/api/query", { method: "POST", body: { sql: `SELECT * FROM "${t.name}" LIMIT 200`, table_versions: { [t.name]: v.version } } });
+      clear(preview).append(h("h3", { text: `Snapshot v${v.version}` }), dataTable(q.columns, q.rows));
+    }
+    return h("section", { class: "panel stack" }, h("h3", { text: "Snapshots (time travel)" }),
+      dataTable([{ key: "version", label: "Version" }, { key: "rows", label: "Rows", num: true }, { key: "pipeline_run_id", label: "Run" }, { key: "created_at", label: "Created" }, { key: "act", label: "" }],
+        r.items.map((v) => ({ ...v, act: v })), { onRow: show, render: {
+          version: (x, v) => h("span", {}, `v${x} `, v.is_current ? badge("current") : null, v.restored_from ? h("span", { class: "muted", text: `(from v${v.restored_from})` }) : null),
+          created_at: (x) => fmtDate(x),
+          act: (v) => h("button", { text: "Restore", disabled: v.is_current, onclick: (e) => { e.stopPropagation();
+            restoreDialog(`Restore ${t.name} v${v.version}?`, "Creates a new snapshot copying this one and makes it current.",
+              async () => { await guarded(() => api(`/api/tables/${encodeURIComponent(t.name)}/versions/${v.version}/restore`, { method: "POST" }), "Restored"); reload(); }); } }) } }),
+      preview);
+  },
+});

@@ -53,9 +53,13 @@ def create_app() -> FastAPI:
         return {"ok": True, "version": __version__}
 
     @app.post("/api/query", tags=["query"], dependencies=[Admin])
-    def query(body: dict = Body(..., examples=[{"sql": "SELECT name, mime FROM documents", "limit": 100}])):
-        """Run read-only SQL over the lakehouse views."""
-        return lake.run_query(body["sql"], body.get("params"), limit=int(body.get("limit", 1000)))
+    def query(body: dict = Body(..., examples=[{"sql": "SELECT name, mime FROM documents", "limit": 100, "table_versions": {"stats": 2}}])):
+        """Run SQL over the lakehouse views. ``table_versions`` pins lake tables to older snapshots (time travel)."""
+        con = lake.connect(table_versions={k: int(v) for k, v in (body.get("table_versions") or {}).items()})
+        try:
+            return lake.run_query(body["sql"], body.get("params"), limit=int(body.get("limit", 1000)), con=con)
+        finally:
+            con.close()
 
     _include_routers(app)
 
