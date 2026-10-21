@@ -19,6 +19,7 @@ dependencies = [
   "pyarrow>=16",
   "pandas>=2.2",
   "pytz>=2024.1",
+  "packaging>=24",
   "filetype>=1.2",
   "charset-normalizer>=3.3",
   "pypdf>=4.3",

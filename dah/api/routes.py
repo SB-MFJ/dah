@@ -6,7 +6,7 @@ from fastapi import APIRouter
 
 
 def all_routers() -> list[APIRouter]:
-    from . import assist_routes, documents, pipelines, schema_routes, sso_routes, versions
+    from . import assist_routes, documents, license_routes, pipelines, schema_routes, sso_routes, versions
 
     return [
         documents.router,
@@ -16,4 +16,5 @@ def all_routers() -> list[APIRouter]:
         assist_routes.router,
         sso_routes.admin,
         sso_routes.public,
+        license_routes.router,
     ]

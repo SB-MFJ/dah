@@ -23,6 +23,9 @@ def main(argv: list[str] | None = None) -> int:
     mp.add_argument("--host", default="0.0.0.0")
     mp.add_argument("--port", type=int, default=8001)
 
+    lp = sub.add_parser("licenses", help="print the open-source license inventory")
+    lp.add_argument("--markdown", action="store_true", help="THIRD_PARTY_LICENSES.md format")
+
     a = p.parse_args(argv)
     if a.cmd == "serve":
         import uvicorn
@@ -40,6 +43,15 @@ def main(argv: list[str] | None = None) -> int:
             with path.open("rb") as fh:
                 res = ingest_file(fh, filename=path.name, logical_path=(a.prefix.rstrip("/") + "/" + path.name).lstrip("/"), sync=True)
             print(f"{res['path']}: v{res['version']} {res['status']}")
+    elif a.cmd == "licenses":
+        from . import licenses
+
+        if a.markdown:
+            print(licenses.markdown())
+        else:
+            for pkg in licenses.inventory()["python_packages"]:
+                flag = "" if pkg["open_source"] else "   <-- REVIEW"
+                print(f"{pkg['name']:28} {pkg['version']:14} {pkg['license']}{flag}")
     elif a.cmd == "mcp":
         from .mcp_server import main as mcp_main
 

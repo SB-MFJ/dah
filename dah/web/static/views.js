@@ -648,3 +648,26 @@ registerView("access", {
     }
   },
 });
+
+/* ================================================================ Licenses */
+
+registerView("licenses", {
+  title: "Licenses", order: 90,
+  async render(root) {
+    const inv = await api("/api/licenses");
+    const link = (text, url) => url ? h("a", { href: url, target: "_blank", rel: "noopener", text }) : text;
+    root.append(h("div", { class: "stack" },
+      h("section", { class: "panel stack" }, h("h2", { text: "Open-source acknowledgements" }),
+        h("p", { text: `dah ${inv.project.version} is licensed under ${inv.project.license} and built entirely on open-source software. Thank you to every project listed here.` }),
+        h("p", {}, "Public page: ", h("a", { href: "/licenses", target: "_blank", text: "/licenses" }))),
+      h("section", { class: "panel stack" }, h("h3", { text: "System and frontend components" }),
+        dataTable([{ key: "name", label: "Component" }, { key: "license", label: "License" }, { key: "used_for", label: "Used for" }], inv.system_components,
+          { render: { name: (v, r) => link(v, r.url) } })),
+      h("section", { class: "panel stack" }, h("h3", { text: `Python packages (${inv.python_packages.length})` }),
+        dataTable([{ key: "name", label: "Package" }, { key: "version", label: "Version" }, { key: "license", label: "License" }, { key: "direct", label: "Direct" }, { key: "text", label: "" }],
+          inv.python_packages, { render: {
+            name: (v, r) => link(v, r.url), direct: (v) => (v ? "yes" : ""),
+            license: (v, r) => h("span", {}, v, r.open_source ? null : [" ", badge("failed")], r.note ? h("div", { class: "sub muted", text: r.note }) : null),
+            text: (_, r) => r.has_license_text ? link("license text", `/api/licenses/${encodeURIComponent(r.name)}/text`) : "" } }))));
+  },
+});
