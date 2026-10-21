@@ -141,7 +141,10 @@ def connect(session: Session | None = None, *, table_versions: dict[str, int] | 
     for t in session.scalars(select(LakeTable)):
         tv = t.version_row(pins.get(t.name))
         if tv is not None and Path(tv.path).exists():
-            con.execute(f'CREATE VIEW "{t.name}" AS SELECT * FROM read_parquet({_q(tv.path)})')
+            try:
+                con.execute(f'CREATE VIEW "{t.name}" AS SELECT * FROM read_parquet({_q(tv.path)})')
+            except duckdb.Error:  # unreadable snapshot must not break every query
+                pass
 
     lake = str(settings.lake_dir.resolve()) + "/"
     tmp = str((settings.data_dir / "tmp").resolve()) + "/"
@@ -273,7 +276,16 @@ def commit_table_snapshot(session: Session, name: str, staged: Path, run_id: int
         pq.write_table(merged, dest)
         staged.unlink(missing_ok=True)
     else:
-        shutil.move(str(staged), dest)
+        staged_schema = pq.read_schema(staged)
+        if len(staged_schema) == 0 and prev is not None and Path(prev.path).exists():
+            # Empty result with no inferable columns: keep the previous snapshot's schema.
+            pq.write_table(pq.read_schema(prev.path).empty_table(), dest)
+            staged.unlink(missing_ok=True)
+        elif len(staged_schema) == 0:
+            pq.write_table(pa.table({"_empty": pa.array([], pa.null())}), dest)
+            staged.unlink(missing_ok=True)
+        else:
+            shutil.move(str(staged), dest)
 
     meta = pq.read_metadata(dest)
     schema = pq.read_schema(dest)

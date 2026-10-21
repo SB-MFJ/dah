@@ -6,6 +6,6 @@ from fastapi import APIRouter
 
 
 def all_routers() -> list[APIRouter]:
-    from . import documents
+    from . import documents, pipelines
 
-    return [documents.router]
+    return [documents.router, pipelines.router]
