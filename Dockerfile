@@ -21,7 +21,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY pyproject.toml README.md THIRD_PARTY_LICENSES.md ./
+COPY pyproject.toml README.md LICENSE NOTICE THIRD_PARTY_LICENSES.md ./
 COPY dah ./dah
 
 # Vendor the Monaco editor so the UI works fully offline (MIT licensed).

@@ -9,6 +9,7 @@ description = "Self-hosted document lakehouse: ingest, OCR, transform, version a
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
