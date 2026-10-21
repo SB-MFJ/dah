@@ -505,15 +505,24 @@ registerView("settings", {
 
 const OIDC_FIELDS = [["issuer", "Issuer URL"], ["client_id", "Client ID"], ["client_secret", "Client secret", "password"], ["discovery_url", "Discovery URL (optional)"],
   ["scopes", "Scopes (space separated)", "list"], ["groups_claim", "Groups claim"], ["email_claim", "Email claim"], ["attribute_claims", "Extra claims → attributes", "list"],
-  ["audience", "Bearer token audience (default client ID)"], ["allow_bearer", "Accept IdP bearer tokens on /data", "bool"]];
+  ["audience", "Bearer token audience (default client ID)"], ["allow_bearer", "Accept IdP bearer tokens on /data", "bool"],
+  ["admin_groups", "IdP groups that are site admins", "list"]];
 const SAML_FIELDS = [["idp_entity_id", "IdP entity ID"], ["idp_sso_url", "IdP SSO URL (redirect binding)"], ["idp_x509_cert", "IdP signing certificate (PEM)", "text"],
   ["idp_slo_url", "IdP logout URL (optional)"], ["sp_entity_id", "SP entity ID (default: metadata URL)"], ["groups_attribute", "Groups attribute"],
   ["email_attribute", "Email attribute"], ["name_attribute", "Display-name attribute"], ["attribute_names", "Extra attributes → attributes", "list"],
   ["name_id_format", "NameID format"], ["want_assertions_signed", "Require signed assertions", "bool"], ["sp_x509_cert", "SP certificate (optional, PEM)", "text"],
-  ["sp_private_key", "SP private key (optional, PEM)", "secret-text"]];
+  ["sp_private_key", "SP private key (optional, PEM)", "secret-text"], ["admin_groups", "IdP groups that are site admins", "list"]];
+const LDAP_FIELDS = [["server_url", "Server URL (ldap:// or ldaps://)"], ["start_tls", "StartTLS", "bool"], ["tls_verify", "Verify TLS certificate", "bool"],
+  ["ca_cert_file", "CA bundle path (optional)"], ["bind_dn", "Service bind DN"], ["bind_password", "Service bind password", "password"],
+  ["user_search_base", "User search base"], ["username_attribute", "Username attribute (uid / sAMAccountName)"],
+  ["user_filter", "User filter (optional, {username})"], ["email_attribute", "Email attribute"], ["name_attribute", "Display-name attribute"],
+  ["groups_attribute", "Groups attribute on user (memberOf)"], ["group_search_base", "Group search base (optional)"],
+  ["group_filter", "Group filter ({user_dn}, {username})"], ["group_name_attribute", "Group name attribute"],
+  ["attribute_names", "Extra attributes → attributes", "list"], ["admin_groups", "Groups that are site admins", "list"]];
+const PROVIDER_FIELDS = { oidc: OIDC_FIELDS, saml: SAML_FIELDS, ldap: LDAP_FIELDS };
 
 function providerForm(existing, onDone) {
-  const kind = h("select", { disabled: !!existing }, ["oidc", "saml"].map((k) => h("option", { value: k, text: k.toUpperCase(), selected: existing ? existing.kind === k : k === "oidc" })));
+  const kind = h("select", { disabled: !!existing }, ["oidc", "saml", "ldap"].map((k) => h("option", { value: k, text: k.toUpperCase(), selected: existing ? existing.kind === k : k === "oidc" })));
   const id = h("input", { value: existing ? existing.id : "", placeholder: "okta", disabled: !!existing });
   const name = h("input", { value: existing ? existing.display_name : "", placeholder: "Okta (staff)" });
   const enabled = h("input", { type: "checkbox", checked: existing ? existing.enabled : true });
@@ -522,10 +531,10 @@ function providerForm(existing, onDone) {
   function draw() {
     clear(fieldsBox);
     const cfg = existing ? existing.config : {};
-    for (const [key, label, type] of kind.value === "oidc" ? OIDC_FIELDS : SAML_FIELDS) {
+    for (const [key, label, type] of PROVIDER_FIELDS[kind.value]) {
       const v = cfg[key];
       let el;
-      if (type === "bool") el = h("input", { type: "checkbox", checked: v === undefined ? true : !!v });
+      if (type === "bool") el = h("input", { type: "checkbox", checked: v === undefined ? key !== "start_tls" : !!v });
       else if (type === "text" || type === "secret-text") { el = h("textarea", { rows: 4, placeholder: type === "secret-text" && v && v.set ? "stored; leave blank to keep" : "" }); if (type === "text") el.value = v || ""; }
       else if (type === "password") el = h("input", { type: "password", autocomplete: "new-password", placeholder: v && v.set ? "stored; leave blank to keep" : "" });
       else el = h("input", { value: type === "list" ? (v || []).join(" ") : (v || "") });
@@ -553,9 +562,16 @@ function providerForm(existing, onDone) {
     existing ? h("dl", { class: "kv" },
       existing.redirect_uri ? [h("dt", { text: "Redirect URI" }), h("dd", { class: "mono", text: existing.redirect_uri })] : null,
       existing.acs_url ? [h("dt", { text: "ACS URL" }), h("dd", { class: "mono", text: existing.acs_url }), h("dt", { text: "SP metadata" }), h("dd", {}, h("a", { href: existing.metadata_url, target: "_blank", text: existing.metadata_url }))] : null,
-      h("dt", { text: "Login URL" }), h("dd", { class: "mono", text: existing.login_url })) : null,
+      existing.login_url ? [h("dt", { text: "Login URL" }), h("dd", { class: "mono", text: existing.login_url })]
+        : [h("dt", { text: "Sign-in" }), h("dd", { text: "Username + password in the sign-in dialog or at /sso" })]) : null,
     h("div", { class: "row" }, h("button", { class: "primary", text: existing ? "Save" : "Create", onclick: save }),
-      existing ? h("button", { class: "danger", text: "Delete", onclick: async () => { await guarded(() => api(`/api/sso/providers/${existing.id}`, { method: "DELETE" }), "Deleted"); onDone(); } }) : null));
+      existing ? h("button", { text: "Test connection", onclick: async () => {
+        const r = await guarded(() => api(`/api/sso/providers/${existing.id}/test`, { method: "POST" }));
+        toast(r.ok ? "Connection OK" : `Failed: ${r.error}`, !r.ok);
+      } }) : null,
+      existing ? h("button", { class: "danger", text: "Delete…", onclick: () => confirmAction(`Delete ${existing.display_name}?`,
+        "Users from this provider can no longer sign in. Their accounts stay (disable or delete them under Users).", "Delete",
+        async () => { await guarded(() => api(`/api/sso/providers/${existing.id}`, { method: "DELETE" }), "Deleted"); onDone(); }) }) : null));
 }
 
 const POLICY_EXAMPLE = {
@@ -643,7 +659,7 @@ registerView("access", {
           { render: { at: (v) => fmtDate(v), allowed: (v) => badge(v ? "succeeded" : "failed") } }))));
     } else {
       main.append(h("section", { class: "panel stack" }, h("h2", { text: "SSO-protected data API" }),
-        h("p", { text: "Configure any number of SAML 2.0 and OpenID Connect identity providers, then publish data endpoints with per-endpoint access policies (users, groups, row filters from user claims, column restrictions)." }),
+        h("p", { text: "Configure any number of OIDC, SAML 2.0 and LDAP identity providers. They sign users in to this site (accounts are created on first sign-in, folder permissions apply through their groups) and to published data endpoints with per-endpoint policies (users, groups, row filters from user claims, column restrictions)." }),
         h("p", {}, "Users sign in at ", h("a", { href: "/sso", target: "_blank", text: "/sso" }), "; API clients use the issued bearer token or, for OIDC providers, the IdP's own JWT.")));
     }
   },
