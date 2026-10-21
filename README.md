@@ -2,19 +2,22 @@
 
 dah ingests documents of any type, extracts their text and metadata (with OCR where needed), and
 makes everything queryable with SQL. You can transform the data with versioned Python or SQL
-pipelines, edit those pipelines with an autocompleting editor or an AI assistant, reach the
-lakehouse from MCP clients, and publish datasets behind SAML/OIDC single sign-on with row- and
-column-level access control.
+pipelines, edit those pipelines with an autocompleting editor or an AI assistant, and reach the
+lakehouse from MCP clients. Users sign in with local accounts or through OIDC, SAML or LDAP, and
+per-folder permissions decide which documents each user can see and change. You can also publish
+datasets behind SSO with row- and column-level access control.
 
 Everything runs in Docker, is written in Python (CPython 3.11+), and uses only open-source
-components (see [`/licenses`](THIRD_PARTY_LICENSES.md)).
+components (see [`/licenses`](THIRD_PARTY_LICENSES.md)). dah itself is licensed under the
+[Apache License 2.0](LICENSE).
 
 ## Quick start
 
 ```bash
-cp .env.example .env          # set DAH_ADMIN_TOKEN, DAH_SECRET_KEY, DAH_PUBLIC_BASE_URL
+cp .env.example .env          # set DAH_ADMIN_TOKEN, DAH_SECRET_KEY, DAH_PUBLIC_BASE_URL,
+                              #     DAH_BOOTSTRAP_ADMIN_USER / DAH_BOOTSTRAP_ADMIN_PASSWORD
 docker compose up -d --build  # app on :8000, MCP server on :8001
-open http://localhost:8000    # sign in with DAH_ADMIN_TOKEN
+open http://localhost:8000    # sign in as the bootstrap admin
 ```
 
 Optional Postgres catalog: `docker compose --profile postgres up -d` and set
@@ -134,15 +137,16 @@ editor, "Ask AI" sends the current code, your instruction and the live schema, a
 proposal as a validated diff. Nothing is saved until you click Save. With Anthropic, server-side
 fallback on declined requests (a beta feature) is on by default; you can turn it off in settings.
 
-**MCP**: 16 tools: `list_documents, get_document, search_text, run_sql, describe_schema,
+**MCP**: each client authenticates with its own personal API token and acts with that user's role
+and folder permissions. 16 tools: `list_documents, get_document, search_text, run_sql, describe_schema,
 list_tables, list_pipelines, get_pipeline, validate_pipeline, create_pipeline, update_pipeline,
 run_pipeline, assist_edit_pipeline, list_versions, diff_versions, restore_version`.
 
 ```jsonc
 // streamable HTTP (docker compose service "mcp")
-{ "url": "http://localhost:8001/mcp", "headers": { "Authorization": "Bearer <DAH_MCP_TOKEN>" } }
+{ "url": "http://localhost:8001/mcp", "headers": { "Authorization": "Bearer <personal API token>" } }
 // stdio
-{ "command": "dah-mcp", "env": { "DAH_API_URL": "http://localhost:8000", "DAH_ADMIN_TOKEN": "…" } }
+{ "command": "dah-mcp", "env": { "DAH_API_URL": "http://localhost:8000", "DAH_MCP_TOKEN": "<personal API token>" } }
 ```
 
 ### 5. Versioning
@@ -193,7 +197,46 @@ IdP setup values (shown on each provider's page):
 - OIDC redirect URI: `<DAH_PUBLIC_BASE_URL>/sso/<id>/callback`
 - SAML ACS: `<DAH_PUBLIC_BASE_URL>/sso/<id>/acs`; SP metadata: `/sso/<id>/metadata`
 
-### 7. License acknowledgements
+### 7. Accounts and sign-in
+
+- **Local accounts**: an admin creates them under Users, or with `dah user create <name> [--admin]`.
+  Passwords are hashed with scrypt. Failed logins are throttled (10 per 15 minutes per user and
+  IP). Changing a password or disabling an account signs that user out everywhere.
+- **OIDC, SAML 2.0 and LDAP / Active Directory**: add as many providers as you need under
+  Access → Identity providers. OIDC and SAML appear as buttons on the sign-in screen, and LDAP
+  adds an entry to its "Sign in with" list. The first sign-in creates an account, and IdP groups
+  refresh at every sign-in. Members of a provider's `admin_groups` become site administrators.
+- **Sessions**: the browser gets an HttpOnly cookie, and writes made with it need the
+  `X-DAH-CSRF: 1` header (the UI sends it). The same session works for the UI, the API and `/data`.
+- **Personal API tokens** (Account page): `Authorization: Bearer dah_pat_…` for scripts and MCP
+  clients. A token acts with its owner's role and folder permissions.
+- **Admin token**: `DAH_ADMIN_TOKEN` is a break-glass credential with full access.
+
+Administrators manage pipelines, tables, settings, providers, endpoints and users. Everyone else
+works with documents and SQL inside the folders they've been granted.
+
+### 8. Per-folder permissions
+
+Document paths form folders (`finance/2026/q1.pdf` is in `finance/2026`). Under Folders, admins
+and folder managers grant a level to a **user** (username or email), a **group** (local or from
+the IdP) or **all signed-in users**. A grant applies to the folder and everything below it:
+
+| Level | Allows |
+|---|---|
+| read | list, open, download, search, version history, SQL over those documents |
+| write | + upload new documents or versions, restore versions, reprocess |
+| manage | + delete documents, grant and revoke permissions inside the folder |
+
+Enforcement happens on the server everywhere documents are reachable: the documents API, search,
+version history, the schema used for autofill, MCP (which acts as the calling user) and SQL. A
+non-admin's SQL session contains only readable documents. DuckDB may open only those documents'
+exact Parquet files, so `read_parquet()` or glob tricks can't bypass the filters. Pipeline output
+tables aren't visible to non-admins, because they may combine data across folders; publish them
+through `/data` endpoints instead. Data endpoints can also apply folder permissions with
+`"folder_column": "path"` in their policy. Documents a user can't read return 404, the same as
+documents that don't exist.
+
+### 9. License acknowledgements
 
 `/licenses` (public) lists every Python package in dah's dependency closure, plus the bundled
 system and frontend components, with their licenses and full license texts. Tests fail if a
@@ -209,7 +252,10 @@ dependency isn't open source. To regenerate the file:
 | `DAH_PUBLIC_BASE_URL` | `http://localhost:8000` | external URL used for SSO redirects (use a real hostname for SAML) |
 | `DAH_DATA_DIR` | `./data` (`/data` in Docker) | blobs, Parquet, SQLite catalog |
 | `DAH_DATABASE_URL` | SQLite in data dir | external catalog |
-| `DAH_MCP_TOKEN` | admin token | bearer token for the MCP HTTP transport |
+| `DAH_MCP_TOKEN` | admin token | credential the MCP server uses on stdio (HTTP clients send their own) |
+| `DAH_BOOTSTRAP_ADMIN_USER` / `_PASSWORD` | unset | local admin created at first start |
+| `DAH_LOCAL_LOGIN_ENABLED` | `true` | allow local-account passwords (set `false` for SSO-only) |
+| `DAH_PASSWORD_MIN_LENGTH` | `10` | local password policy |
 | `DAH_OCR_LANGUAGES` | `eng` | Tesseract languages (install more `tesseract-ocr-*` packs in the image) |
 | `DAH_OCR_MIN_PAGE_CHARS` | `25` | PDF pages with less text are OCR'd |
 | `DAH_INGEST_WORKERS` | `2` | background workers |
@@ -218,8 +264,9 @@ dependency isn't open source. To regenerate the file:
 
 ## Security notes
 
-- Admin endpoints need `DAH_ADMIN_TOKEN`. `/data/*` needs an SSO session or token. `/licenses`
-  and `/sso` are public.
+- Admin endpoints need an admin account or `DAH_ADMIN_TOKEN`. Document endpoints need an account,
+  and folder permissions apply. `/data/*` follows each endpoint's policy. `/licenses`, `/sso` and
+  `/auth/methods` are public.
 - Ad-hoc SQL runs in DuckDB with external file access restricted to the lake directory, and the
   configuration is locked.
 - Pipeline code is **trusted admin code**. Its subprocess sandbox limits time and memory and
@@ -238,6 +285,7 @@ dah/            config, db (catalog), storage (blobs), lake (DuckDB), jobs, sche
                 settings_store, assist (ML), licenses, mcp_server, cli
 dah/ingest/     detect, extractors (OCR), service
 dah/pipelines/  context (ctx/doc API), worker (sandbox), service
+dah/auth/       identity (sessions, API tokens, provisioning), passwords, ldap, folders (permissions)
 dah/sso/        core (principals, tokens), oidc, saml, acl (policies)
 dah/api/        FastAPI routers
 dah/web/static/ single-page UI (no build step)

@@ -42,16 +42,16 @@ def _key_list(rows) -> list[dict]:
     ]
 
 
-def metadata_keys() -> list[dict]:
+def metadata_keys(doc_filter=None) -> list[dict]:
     with session_scope() as s:
-        rows = s.scalars(
-            select(DocumentVersion.metadata_json)
+        rows = s.execute(
+            select(Document.path, DocumentVersion.metadata_json)
             .join(Document, Document.id == DocumentVersion.document_id)
             .where(DocumentVersion.version == Document.current_version)
             .order_by(DocumentVersion.id.desc())
-            .limit(SAMPLE_DOCS)
+            .limit(SAMPLE_DOCS * (1 if doc_filter is None else 4))
         ).all()
-    return _key_list(rows)
+    return _key_list([m for path, m in rows if doc_filter is None or doc_filter(path)][:SAMPLE_DOCS])
 
 
 def record_keys(con) -> list[dict]:
@@ -118,8 +118,9 @@ SQL_HINTS = [
 ]
 
 
-def schema() -> dict:
-    con = lake.connect()
+def schema(doc_filter=None) -> dict:
+    """``doc_filter(path)`` limits views and key statistics to documents the caller can read."""
+    con = lake.connect(doc_filter=doc_filter)
     try:
         views = lake.describe_views(con)
         rkeys = record_keys(con)
@@ -128,7 +129,7 @@ def schema() -> dict:
     return {
         "views": views,
         "builtin_views": list(lake.BUILTIN_VIEWS),
-        "metadata_keys": metadata_keys(),
+        "metadata_keys": metadata_keys(doc_filter),
         "record_keys": rkeys,
         "api": api_members(),
         "sql_hints": SQL_HINTS,

@@ -42,7 +42,15 @@ def require_account(ident: Identity = Depends(current_identity)) -> Identity:
     return ident
 
 
+def get_access(ident: Identity = Depends(current_identity), db: Session = Depends(get_db)):
+    """Folder permissions of the caller."""
+    from ..auth.folders import load_access
+
+    return load_access(db, ident)
+
+
 Admin = Depends(require_admin)
+Perm = Depends(get_access)
 Caller = Depends(current_identity)
 DB = Depends(get_db)
 

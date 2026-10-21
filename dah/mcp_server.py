@@ -24,6 +24,7 @@ from typing import Any, Literal
 import anyio
 import httpx
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 READ = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
@@ -78,7 +79,8 @@ def _call(ctx: Context | None, method: str, path: str, **kw) -> Any:
             detail = r.json().get("detail")
         except ValueError:
             detail = r.text
-        raise RuntimeError(f"{method} {path} failed ({r.status_code}): {detail}")
+        # ToolError messages reach the client (other exceptions are reported generically).
+        raise ToolError(f"{method} {path} failed ({r.status_code}): {detail}")
     ct = r.headers.get("content-type", "")
     return r.json() if "json" in ct else r.text
 

@@ -14,9 +14,10 @@ from .. import lake
 from ..db import Document, DocumentVersion
 from ..ingest import service
 from ..storage import BlobStore
-from .deps import DB, Admin
+from ..auth.folders import Access
+from .deps import DB, Caller, Perm
 
-router = APIRouter(prefix="/api/documents", tags=["documents"], dependencies=[Admin])
+router = APIRouter(prefix="/api/documents", tags=["documents"], dependencies=[Caller])
 
 
 def version_dict(v: DocumentVersion, current: int, with_text: bool = False) -> dict:
@@ -59,11 +60,19 @@ def doc_dict(d: Document, with_text: bool = False) -> dict:
     }
 
 
-def get_doc(db: Session, document_id: str) -> Document:
+def get_doc(db: Session, document_id: str, access: Access | None = None, need: str = "read") -> Document:
+    """Load a document the caller may access. Unreadable documents look like missing ones (404)."""
     d = db.get(Document, document_id)
-    if d is None:
+    if d is None or (access is not None and not access.can_read(d.path)):
         raise HTTPException(404, "document not found")
+    if access is not None and not access.can(d.path, need):
+        raise HTTPException(403, f"{need} permission required on this folder")
     return d
+
+
+def doc_filter(access: Access):
+    """Path predicate for lake.connect. Non-admins always get a filtered, file-allowlisted connection."""
+    return None if access.admin else access.can_read
 
 
 def get_version(d: Document, version: int | None) -> DocumentVersion:
@@ -80,6 +89,7 @@ def upload(
     comment: str | None = Form(None),
     metadata: str | None = Form(None, description="JSON object stored under metadata.user"),
     sync: bool = Form(False, description="process before returning"),
+    access: Access = Perm,
 ):
     user_md = None
     if metadata:
@@ -89,15 +99,20 @@ def upload(
             raise HTTPException(400, "metadata must be a JSON object")
         if not isinstance(user_md, dict):
             raise HTTPException(400, "metadata must be a JSON object")
-    out = []
+    targets = []
     for f in files:
         name = f.filename or "upload.bin"
         if path and (path.endswith("/") or len(files) > 1):
             logical = path.rstrip("/") + "/" + name
         else:
             logical = path or name
-        out.append(service.ingest_file(f.file, name, logical, comment=comment, user_metadata=user_md, sync=sync))
-    return {"items": out}
+        logical = service.normalize_path(logical)
+        if not access.can(logical, "write"):
+            raise HTTPException(403, f"write permission required for {logical!r}")
+        targets.append((f, name, logical))
+    who = access.ident.username
+    return {"items": [service.ingest_file(f.file, name, logical, comment=comment, user_metadata=user_md, sync=sync, created_by=who)
+                      for f, name, logical in targets]}
 
 
 @router.get("")
@@ -107,19 +122,23 @@ def list_documents(
     prefix: str | None = None,
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
+    access: Access = Perm,
 ):
     stmt = select(Document)
+    clause = access.sql_clause(Document.path)
+    if clause is not None:
+        stmt = stmt.where(clause)
     if q:
         stmt = stmt.where(or_(Document.path.contains(q), Document.name.contains(q)))
     if prefix:
-        stmt = stmt.where(Document.path.startswith(prefix))
+        stmt = stmt.where(Document.path.startswith(prefix, autoescape=True))
     total = db.scalar(select(func.count()).select_from(stmt.subquery()))
     docs = db.scalars(stmt.order_by(Document.updated_at.desc()).limit(limit).offset(offset)).all()
     return {"total": total, "items": [doc_dict(d) for d in docs]}
 
 
 @router.get("/search")
-def search(q: str = Query(..., min_length=1), limit: int = Query(50, le=500)):
+def search(q: str = Query(..., min_length=1), limit: int = Query(50, le=500), access: Access = Perm):
     """Case-insensitive full-text substring search over extracted pages."""
     sql = """
         SELECT p.document_id, d.path, p.page,
@@ -128,22 +147,27 @@ def search(q: str = Query(..., min_length=1), limit: int = Query(50, le=500)):
         WHERE strpos(lower(p.text), lower($q)) > 0
         ORDER BY d.path, p.page LIMIT $lim
     """
-    return lake.run_query(sql, {"q": q, "lim": limit}, limit=None)
+    con = lake.connect(doc_filter=doc_filter(access))
+    try:
+        return lake.run_query(sql, {"q": q, "lim": limit}, limit=None, con=con)
+    finally:
+        con.close()
 
 
 @router.get("/{document_id}")
-def get_document(document_id: str, db: Session = DB, text: bool = False):
-    return doc_dict(get_doc(db, document_id), with_text=text)
+def get_document(document_id: str, db: Session = DB, text: bool = False, access: Access = Perm):
+    d = get_doc(db, document_id, access)
+    return {**doc_dict(d, with_text=text), "my_level": access.level(d.path)}
 
 
 @router.get("/{document_id}/text", response_class=PlainTextResponse)
-def get_text(document_id: str, version: int | None = None, db: Session = DB):
-    return get_version(get_doc(db, document_id), version).text
+def get_text(document_id: str, version: int | None = None, db: Session = DB, access: Access = Perm):
+    return get_version(get_doc(db, document_id, access), version).text
 
 
 @router.get("/{document_id}/pages")
-def get_pages(document_id: str, version: int | None = None, db: Session = DB):
-    v = get_version(get_doc(db, document_id), version)
+def get_pages(document_id: str, version: int | None = None, db: Session = DB, access: Access = Perm):
+    v = get_version(get_doc(db, document_id, access), version)
     if not v.bronze_path:
         return {"pages": []}
     import pyarrow.parquet as pq
@@ -153,23 +177,23 @@ def get_pages(document_id: str, version: int | None = None, db: Session = DB):
 
 
 @router.get("/{document_id}/download")
-def download(document_id: str, version: int | None = None, db: Session = DB):
-    v = get_version(get_doc(db, document_id), version)
+def download(document_id: str, version: int | None = None, db: Session = DB, access: Access = Perm):
+    v = get_version(get_doc(db, document_id, access), version)
     return FileResponse(BlobStore().path(v.sha256), media_type=v.mime, filename=v.filename)
 
 
 @router.post("/{document_id}/reprocess")
-def reprocess(document_id: str, version: int | None = None, sync: bool = False, db: Session = DB):
-    get_doc(db, document_id)
+def reprocess(document_id: str, version: int | None = None, sync: bool = False, db: Session = DB, access: Access = Perm):
+    get_doc(db, document_id, access, "write")
     service.reprocess(document_id, version, sync=sync)
     db.expire_all()
     return doc_dict(get_doc(db, document_id))
 
 
 @router.delete("/{document_id}")
-def delete(document_id: str, db: Session = DB):
-    """Delete a document and all versions from the catalog (blobs are content-addressed and kept)."""
-    d = get_doc(db, document_id)
+def delete(document_id: str, db: Session = DB, access: Access = Perm):
+    """Delete a document and all versions from the catalog (blobs are content-addressed and kept). Needs manage."""
+    d = get_doc(db, document_id, access, "manage")
     db.delete(d)
     db.flush()
     from ..config import get_settings

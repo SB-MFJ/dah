@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import duckdb
-from fastapi import Body, FastAPI, Request
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -14,7 +14,8 @@ from .. import __version__
 from ..config import get_settings
 from ..db import engine
 from .. import jobs, lake
-from .deps import Admin
+from ..auth.folders import Access
+from .deps import Perm
 
 STATIC = Path(__file__).resolve().parent.parent / "web" / "static"
 
@@ -66,10 +67,19 @@ def create_app() -> FastAPI:
     def healthz():
         return {"ok": True, "version": __version__}
 
-    @app.post("/api/query", tags=["query"], dependencies=[Admin])
-    def query(body: dict = Body(..., examples=[{"sql": "SELECT name, mime FROM documents", "limit": 100, "table_versions": {"stats": 2}}])):
-        """Run SQL over the lakehouse views. ``table_versions`` pins lake tables to older snapshots (time travel)."""
-        con = lake.connect(table_versions={k: int(v) for k, v in (body.get("table_versions") or {}).items()})
+    @app.post("/api/query", tags=["query"])
+    def query(body: dict = Body(..., examples=[{"sql": "SELECT name, mime FROM documents", "limit": 100, "table_versions": {"stats": 2}}]),
+              access: Access = Perm):
+        """Run SQL over the lakehouse views. ``table_versions`` pins lake tables to older snapshots (time travel).
+
+        Non-admins see only documents in folders they can read, and no pipeline tables.
+        """
+        if access.admin:
+            con = lake.connect(table_versions={k: int(v) for k, v in (body.get("table_versions") or {}).items()})
+        else:
+            if body.get("table_versions"):
+                raise HTTPException(403, "time travel over pipeline tables is for administrators")
+            con = lake.connect(doc_filter=access.can_read)
         try:
             return lake.run_query(body["sql"], body.get("params"), limit=int(body.get("limit", 1000)), con=con)
         finally:

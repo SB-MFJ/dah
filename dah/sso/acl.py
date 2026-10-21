@@ -15,7 +15,8 @@ Policy JSON (all keys optional)::
       "columns": ["id", "path", "amount"],    # column allowlist (empty = all)
       "column_groups": {"salary": ["hr"]},    # column visible only to these groups
       "max_rows": 10000,
-      "allow_user_filters": true              # ?f.<column>=value equality filters
+      "allow_user_filters": true,             # ?f.<column>=value equality filters
+      "folder_column": "path"                 # rows also limited to folders the caller can read
     }
 
 Row filter ops: ``eq`` (default), ``in`` (claim is a list; column must be one of them),
@@ -31,7 +32,8 @@ from .core import Principal
 
 IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 OPS = ("eq", "in", "contains")
-POLICY_KEYS = {"providers", "allowed_users", "allowed_groups", "row_filters", "unrestricted_groups", "columns", "column_groups", "max_rows", "allow_user_filters"}
+POLICY_KEYS = {"providers", "allowed_users", "allowed_groups", "row_filters", "unrestricted_groups", "columns", "column_groups", "max_rows",
+               "allow_user_filters", "folder_column"}
 
 
 class PolicyError(ValueError):
@@ -52,6 +54,8 @@ def validate_policy(p: dict) -> dict:
     for c in list(p.get("columns") or []) + list((p.get("column_groups") or {}).keys()):
         if not IDENT.match(c):
             raise PolicyError(f"invalid column name {c!r}")
+    if p.get("folder_column") and not IDENT.match(p["folder_column"]):
+        raise PolicyError("folder_column must be an identifier")
     if "max_rows" in p and (not isinstance(p["max_rows"], int) or p["max_rows"] < 1):
         raise PolicyError("max_rows must be a positive integer")
     return p
@@ -115,8 +119,12 @@ def row_filter_sql(policy: dict, who: Principal, available: list[str], params: l
 
 
 def build_query(source_sql: str, available: list[str], policy: dict, who: Principal, *, columns: list[str] | None = None,
-                user_filters: dict[str, str] | None = None, order_by: str | None = None, limit: int = 1000, offset: int = 0) -> tuple[str, list, list[str]]:
-    """Returns (sql, params, selected columns). ``source_sql`` is admin-defined; everything user-supplied is bound."""
+                user_filters: dict[str, str] | None = None, order_by: str | None = None, limit: int = 1000, offset: int = 0,
+                folder_access=None) -> tuple[str, list, list[str]]:
+    """Returns (sql, params, selected columns). ``source_sql`` is admin-defined; everything user-supplied is bound.
+
+    ``folder_access`` (auth.folders.Access) applies folder permissions when the policy sets ``folder_column``.
+    """
     visible = visible_columns(policy, who, available)
     if columns:
         bad = [c for c in columns if c not in visible]
@@ -129,6 +137,14 @@ def build_query(source_sql: str, available: list[str], policy: dict, who: Princi
         raise PolicyError("no columns visible to this principal")
     params: list = []
     where = row_filter_sql(policy, who, available, params)
+    fcol = policy.get("folder_column")
+    if fcol:
+        if fcol not in available or folder_access is None:
+            where.append("FALSE")  # fail closed
+        else:
+            clause = folder_access.duck_clause(f"CAST({_q(fcol)} AS VARCHAR)", params)
+            if clause:
+                where.append(clause)
     if user_filters:
         if not policy.get("allow_user_filters", True):
             raise PolicyError("filters are disabled for this endpoint")

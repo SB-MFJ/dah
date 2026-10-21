@@ -24,7 +24,7 @@ import re
 import shutil
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import duckdb
 import pyarrow as pa
@@ -72,12 +72,14 @@ def _q(s: str) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
-def _doc_rows(session: Session, current_only: bool) -> pa.Table:
+def _doc_rows(session: Session, current_only: bool, doc_filter: Callable[[str], bool] | None = None) -> pa.Table:
     q = select(Document, DocumentVersion).join(DocumentVersion, DocumentVersion.document_id == Document.id)
     if current_only:
         q = q.where(DocumentVersion.version == Document.current_version)
     cols: dict[str, list] = {f: [] for f, _ in DOC_FIELDS}
     for d, v in session.execute(q):
+        if doc_filter is not None and not doc_filter(d.path):
+            continue
         row = {
             "id": d.id,
             "path": d.path,
@@ -112,30 +114,44 @@ def _parquet_view(con: duckdb.DuckDBPyConnection, name: str, paths: list[str], s
         con.execute(f'CREATE VIEW "{name}" AS SELECT *{replace} FROM _empty_{name}')
 
 
-def connect(session: Session | None = None, *, table_versions: dict[str, int] | None = None) -> duckdb.DuckDBPyConnection:
+def connect(session: Session | None = None, *, table_versions: dict[str, int] | None = None,
+            doc_filter: Callable[[str], bool] | None = None) -> duckdb.DuckDBPyConnection:
     """Build a sandboxed DuckDB connection over the current lake state.
 
     ``table_versions`` pins specific lake tables to older snapshots (time travel).
+    ``doc_filter(path)`` restricts the connection to documents the caller may read (folder
+    permissions): document views are filtered, pipeline tables are omitted, and DuckDB may open
+    only the exact Parquet files of those documents, so ``read_parquet()`` can't bypass the views.
     """
     if session is None:
         with session_scope() as s:
-            return connect(s, table_versions=table_versions)
+            return connect(s, table_versions=table_versions, doc_filter=doc_filter)
 
     settings = get_settings()
     con = duckdb.connect(":memory:")
 
-    con.register("_documents", _doc_rows(session, current_only=True))
+    con.register("_documents", _doc_rows(session, current_only=True, doc_filter=doc_filter))
     con.execute('CREATE VIEW documents AS SELECT * EXCLUDE (is_current) REPLACE (CAST(metadata AS JSON) AS metadata) FROM _documents')
-    con.register("_document_versions", _doc_rows(session, current_only=False))
+    con.register("_document_versions", _doc_rows(session, current_only=False, doc_filter=doc_filter))
     con.execute("CREATE VIEW document_versions AS SELECT * REPLACE (CAST(metadata AS JSON) AS metadata) FROM _document_versions")
 
-    cur = session.execute(
-        select(DocumentVersion.bronze_path, DocumentVersion.records_path)
-        .join(Document, Document.id == DocumentVersion.document_id)
-        .where(DocumentVersion.version == Document.current_version)
-    ).all()
+    cur = [
+        (b, r) for path, b, r in session.execute(
+            select(Document.path, DocumentVersion.bronze_path, DocumentVersion.records_path)
+            .join(Document, Document.id == DocumentVersion.document_id)
+            .where(DocumentVersion.version == Document.current_version)
+        ).all()
+        if doc_filter is None or doc_filter(path)
+    ]
     _parquet_view(con, "pages", [p for p, _ in cur if p], PAGES_SCHEMA)
     _parquet_view(con, "records", [r for _, r in cur if r], RECORDS_SCHEMA, json_cols=("data",))
+
+    if doc_filter is not None:
+        files = sorted({f for pair in cur for f in pair if f})
+        con.execute("SET allowed_paths=[" + ", ".join(_q(f) for f in files) + "]" if files else "SET allowed_paths=[]")
+        con.execute("SET enable_external_access=false")
+        con.execute("SET lock_configuration=true")
+        return con
 
     pins = table_versions or {}
     for t in session.scalars(select(LakeTable)):
@@ -305,7 +321,7 @@ def commit_table_snapshot(session: Session, name: str, staged: Path, run_id: int
 
 def describe_views(con: duckdb.DuckDBPyConnection) -> dict[str, list[dict]]:
     out: dict[str, list[dict]] = {}
-    for (name,) in con.execute("SELECT view_name FROM duckdb_views() WHERE NOT internal ORDER BY view_name").fetchall():
+    for (name,) in con.execute("SELECT view_name FROM duckdb_views() WHERE NOT internal AND NOT starts_with(view_name, '_') ORDER BY view_name").fetchall():
         cols = con.execute(f'DESCRIBE "{name}"').fetchall()
         out[name] = [{"name": c[0], "type": c[1]} for c in cols]
     return out

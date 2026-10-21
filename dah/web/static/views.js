@@ -793,3 +793,64 @@ registerView("users", {
           async () => { await guarded(() => api(`/api/users/${u.id}`, { method: "DELETE" }), "Deleted"); go("users"); }) }) : null)));
   },
 });
+
+/* ================================================================ Folders + permissions */
+
+registerView("folders", {
+  title: "Folders", order: 15,
+  async render(root, params) {
+    const tree = await api("/api/folders");
+    const sel = params.length ? params.join("/") : "";
+    const depth = (p) => (p ? p.split("/").length : 0);
+    const side = h("div", { class: "panel stack" }, h("h3", { text: "Folders" }),
+      h("ul", { class: "list" }, tree.items.map((f) => h("li", { class: f.path === sel ? "active" : "", style: `padding-left:${10 + depth(f.path) * 14}px`,
+        onclick: () => go("folders", ...(f.path ? f.path.split("/") : [])) },
+        h("div", { text: f.path ? f.path.split("/").pop() + "/" : "/ (root)" }),
+        h("div", { class: "sub", text: `${f.documents} doc(s)${f.my_level ? " · " + f.my_level : ""}` })))));
+    const main = h("div", { class: "stack" });
+    root.append(h("div", { class: "split" }, side, main));
+
+    const here = tree.items.find((f) => f.path === sel) || { path: sel, documents: 0, my_level: null };
+    const docs = await api(`/api/documents?limit=500${sel ? `&prefix=${encodeURIComponent(sel + "/")}` : ""}`);
+    main.append(h("section", { class: "panel stack" },
+      h("div", { class: "row" }, h("h2", { text: "/" + sel }), here.my_level ? badge(here.my_level) : h("span", { class: "muted", text: "no direct access" })),
+      h("p", { class: "muted", text: "read: view, download, search and query · write: + upload, new versions, restore, reprocess · manage: + delete and manage permissions. Grants apply to all subfolders." }),
+      docs.items.length ? dataTable([{ key: "path", label: "Document" }, { key: "status", label: "Status" }, { key: "updated_at", label: "Updated" }],
+        docs.items.map((d) => ({ id: d.id, path: d.path, status: d.latest_status, updated_at: d.updated_at })),
+        { onRow: (r) => go("documents", r.id), render: { status: badge, updated_at: fmtDate } }) : h("p", { class: "muted", text: "No documents you can read here." })));
+
+    if (here.my_level !== "manage" && !tree.is_admin) return;
+    const g = await api(`/api/folders/grants?path=${encodeURIComponent(sel)}`);
+    let groups = [];
+    if (tree.is_admin) { try { groups = (await api("/api/groups")).items; } catch (_) {} }
+    const ptype = h("select", {}, ["group", "user", "authenticated"].map((t) => h("option", { value: t, text: t === "authenticated" ? "all signed-in users" : t })));
+    const pname = h("input", { placeholder: "group name / username or email", list: "dah-groups" });
+    const level = h("select", {}, ["read", "write", "manage"].map((l) => h("option", { value: l, text: l })));
+    ptype.addEventListener("change", () => { pname.disabled = ptype.value === "authenticated"; });
+    const grantRow = (x, removable) => ({ ...x, who: x.principal_type === "authenticated" ? "all signed-in users" : `${x.principal_type}: ${x.principal}`, act: removable ? x : null });
+    const grantTable = (rows, removable) => dataTable(
+      [{ key: "path", label: "Folder" }, { key: "who", label: "Who" }, { key: "level", label: "Level" }, { key: "created_by", label: "Granted by" }, { key: "act", label: "" }],
+      rows.map((x) => grantRow(x, removable)), { render: {
+        path: (v) => "/" + v, level: badge,
+        act: (x) => x ? h("button", { class: "danger", text: "Remove", onclick: () => confirmAction("Remove grant?", `${x.who} loses ${x.level} on /${x.path} (unless granted elsewhere).`, "Remove",
+          async () => { await guarded(() => api(`/api/folders/grants/${x.id}`, { method: "DELETE" }), "Removed"); route(); }) }) : "" } });
+
+    const checkUser = h("input", { placeholder: "username or email" });
+    const checkOut = h("span", { class: "muted" });
+    main.append(h("section", { class: "panel stack" }, h("h3", { text: "Permissions" }),
+      h("datalist", { id: "dah-groups" }, groups.map((x) => h("option", { value: x }))),
+      g.grants.length ? grantTable(g.grants, true) : h("p", { class: "muted", text: "No grants directly on this folder." }),
+      h("div", { class: "row" }, ptype, pname, level, h("button", { class: "primary", text: "Grant", onclick: async () => {
+        await guarded(() => api("/api/folders/grants", { method: "POST", body: { path: sel, principal_type: ptype.value, principal: pname.value.trim(), level: level.value } }), "Granted");
+        route();
+      } })),
+      g.inherited.length ? [h("h3", { text: "Inherited from parent folders" }), grantTable(g.inherited, false)] : null,
+      g.below.length ? [h("h3", { text: "Grants on subfolders" }), grantTable(g.below, true)] : null,
+      h("h3", { text: "Check a user's access" }),
+      h("div", { class: "row" }, checkUser, h("button", { text: "Check", onclick: async () => {
+        const r = await guarded(() => api(`/api/folders/effective?path=${encodeURIComponent(sel)}&user=${encodeURIComponent(checkUser.value.trim())}`));
+        checkOut.textContent = r.admin ? `${r.user} is an administrator (full access)` :
+          r.level ? `${r.user}: ${r.level} via ${r.via.map((v) => `${v.principal_type} ${v.principal || ""} on /${v.path}`).join(", ")}` : `${r.user}: no access`;
+      } }), checkOut)));
+  },
+});

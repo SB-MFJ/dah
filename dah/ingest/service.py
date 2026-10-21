@@ -26,7 +26,8 @@ post_ingest_hooks: list[Callable[[str, int], None]] = []
 
 
 def normalize_path(p: str) -> str:
-    parts = [x for x in PurePosixPath("/" + p.replace("\\", "/")).parts if x not in ("/", ".", "..")]
+    """'/a//b/../c.txt' -> 'a/b/c.txt' (no leading slash, no '.'/'..' segments, no empty segments)."""
+    parts = [x for x in p.replace("\\", "/").split("/") if x not in ("", ".", "..")]
     if not parts:
         raise ValueError("empty document path")
     return "/".join(parts)

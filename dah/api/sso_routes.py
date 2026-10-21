@@ -22,7 +22,8 @@ from ..config import get_settings
 from ..db import AccessLog, DataEndpoint, IdentityProvider, Setting, dumps, session_scope
 from ..sso import acl, core, oidc, saml
 from ..auth.identity import AuthError, Identity, identity_for_user, issue_user_session, provision_external
-from .deps import DB, Admin, current_identity
+from ..auth.folders import Access, load_access
+from .deps import DB, Admin, Perm, current_identity
 
 admin = APIRouter(prefix="/api", tags=["sso-admin"], dependencies=[Admin])
 public = APIRouter(tags=["sso"])
@@ -243,7 +244,10 @@ def simulate(slug: str, body: SimulateIn, db: Session = DB):
     ok, reason = acl.authorize(e.policy, who)
     out = {"allowed": ok, "reason": reason}
     if ok:
-        res = _read(e, who, columns=body.columns, filters=body.filters, order_by=None, limit=body.limit, offset=0)
+        sim = Identity(kind="principal", username=who.email or who.subject, is_admin=False, groups=who.groups, email=who.email,
+                       provider=who.provider, subject=who.subject, attributes=who.attributes)
+        res = _read(e, who, columns=body.columns, filters=body.filters, order_by=None, limit=body.limit, offset=0,
+                    folder_access=load_access(db, sim))
         out.update(sql=res.pop("_sql"), params=res.pop("_params"), **res)
     return out
 
@@ -285,13 +289,14 @@ def _source_columns(source_table: str | None, source_sql: str | None, con=None) 
             con.close()
 
 
-def _read(e: DataEndpoint, who: core.Principal, *, columns, filters, order_by, limit, offset) -> dict:
+def _read(e: DataEndpoint, who: core.Principal, *, columns, filters, order_by, limit, offset, folder_access=None) -> dict:
     con = lake.connect()
     try:
         available = _source_columns(e.source_table, e.source_sql, con)
         try:
             sql, params, selected = acl.build_query(_source_sql(e.source_table, e.source_sql), available, e.policy, who,
-                                                    columns=columns, user_filters=filters, order_by=order_by, limit=limit, offset=offset)
+                                                    columns=columns, user_filters=filters, order_by=order_by, limit=limit, offset=offset,
+                                                    folder_access=folder_access)
         except acl.PolicyError as ex:
             raise HTTPException(400, str(ex))
         res = lake.run_query(sql, params, limit=None, con=con)
@@ -345,6 +350,7 @@ def data_read(
     offset: int = Query(0, ge=0),
     format: Literal["json", "csv", "ndjson"] = "json",
     who: core.Principal = Depends(require_principal),
+    access: Access = Perm,
     db: Session = DB,
 ):
     """Read rows the caller is allowed to see. Equality filters: ``?f.<column>=<value>``."""
@@ -352,7 +358,7 @@ def data_read(
     filters = {k[2:]: v for k, v in request.query_params.items() if k.startswith("f.")}
     cols = [c.strip() for c in columns.split(",") if c.strip()] if columns else None
     try:
-        res = _read(e, who, columns=cols, filters=filters, order_by=order_by, limit=limit, offset=offset)
+        res = _read(e, who, columns=cols, filters=filters, order_by=order_by, limit=limit, offset=offset, folder_access=access)
     except HTTPException as ex:
         _log(slug, who, False, 0, str(ex.detail))
         raise

@@ -141,3 +141,13 @@ def test_detect_sniffing(tmp_path):
         f = tmp_path / name
         f.write_bytes(data)
         assert detect_mime(f, name) == want[name], name
+
+
+def test_path_normalization():
+    from dah.auth.folders import norm_folder
+    from dah.ingest.service import normalize_path
+
+    assert normalize_path("/a//b/./c.txt") == "a/b/c.txt"
+    assert normalize_path("//x/../y.txt") == "x/y.txt"
+    assert normalize_path("..\\\\..\\\\etc\\\\passwd") == "etc/passwd"
+    assert norm_folder("/") == "" and norm_folder("//a/b/") == "a/b"
