@@ -22,6 +22,12 @@ EXT_MIME = {
     ".xml": "application/xml",
     ".yaml": "application/yaml",
     ".yml": "application/yaml",
+    ".toml": "application/toml",
+    ".ini": "text/plain",
+    ".cfg": "text/plain",
+    ".conf": "text/plain",
+    ".py": "text/x-python",
+    ".sql": "application/sql",
     ".html": "text/html",
     ".htm": "text/html",
     ".eml": "message/rfc822",
@@ -82,7 +88,8 @@ def detect_mime(path: Path, filename: str) -> str:
         head = f.read(8192)
     if looks_like_text(head):
         s = head.lstrip()
-        if s[:1] in (b"{", b"["):
+        # "[section]" (ini/toml) also starts with "[": require a JSON value after the bracket.
+        if s[:1] == b"{" or (s[:1] == b"[" and s[1:].lstrip()[:1] in (b"{", b"[", b'"', b"]", b"-", b"t", b"f", b"n", *[bytes([c]) for c in b"0123456789"])):
             return "application/json"
         if s[:5].lower() in (b"<html", b"<!doc"):
             return "text/html"

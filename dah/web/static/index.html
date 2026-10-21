@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dah — document lakehouse</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">dah <span>document lakehouse</span></div>
+    <nav id="nav"></nav>
+    <div class="session"><span id="whoami"></span><button id="logout" class="ghost" hidden>Sign out</button></div>
+  </header>
+
+  <main id="view"></main>
+
+  <dialog id="login">
+    <form method="dialog" id="login-form">
+      <h2>Admin sign-in</h2>
+      <p class="muted">Paste the value of <code>DAH_ADMIN_TOKEN</code>.</p>
+      <input id="login-token" type="password" autocomplete="current-password" placeholder="admin token" required>
+      <label class="inline"><input id="login-remember" type="checkbox"> Remember on this device</label>
+      <p id="login-error" class="error" hidden></p>
+      <menu><button type="submit" class="primary">Sign in</button></menu>
+    </form>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="/static/app.js"></script>
+  <script src="/static/editor.js"></script>
+  <script src="/static/views.js"></script>
+</body>
+</html>

@@ -130,3 +130,14 @@ def test_legacy_doc_without_converter_fails_cleanly(client, monkeypatch):
     assert item["status"] == "failed" and item["mime"] == "application/msword"
     d = client.get(f"/api/documents/{item['document_id']}").json()
     assert "LibreOffice" in d["current"]["error"]
+
+
+def test_detect_sniffing(tmp_path):
+    from dah.ingest.detect import detect_mime
+
+    cases = {"a.toml": b"[build]\nx = 1\n", "noext": b"[section]\nk=v\n", "arr": b' [ {"a": 1} ]', "obj": b'{"a": 1}', "page": b"<!DOCTYPE html><p>x"}
+    want = {"a.toml": "application/toml", "noext": "text/plain", "arr": "application/json", "obj": "application/json", "page": "text/html"}
+    for name, data in cases.items():
+        f = tmp_path / name
+        f.write_bytes(data)
+        assert detect_mime(f, name) == want[name], name

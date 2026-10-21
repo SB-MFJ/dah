@@ -522,7 +522,7 @@ def pick_extractor(mime: str) -> Callable[[Path, str], Extraction] | None:
         return extract_html
     if mime == "message/rfc822":
         return extract_email
-    if mime.startswith("text/") or mime in ("application/xml", "application/yaml", "application/x-yaml"):
+    if mime.startswith("text/") or mime in ("application/xml", "application/yaml", "application/x-yaml", "application/toml", "application/sql"):
         return extract_text
     return None
 
