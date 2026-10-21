@@ -500,3 +500,151 @@ registerView("settings", {
         h("pre", { text: "Streamable HTTP: http://<host>:8001/mcp\nHeader:        Authorization: Bearer <DAH_MCP_TOKEN or DAH_ADMIN_TOKEN>\n\nstdio (local):  DAH_API_URL=http://localhost:8000 DAH_ADMIN_TOKEN=… dah-mcp" })));
   },
 });
+
+/* ================================================================ SSO + data endpoints */
+
+const OIDC_FIELDS = [["issuer", "Issuer URL"], ["client_id", "Client ID"], ["client_secret", "Client secret", "password"], ["discovery_url", "Discovery URL (optional)"],
+  ["scopes", "Scopes (space separated)", "list"], ["groups_claim", "Groups claim"], ["email_claim", "Email claim"], ["attribute_claims", "Extra claims → attributes", "list"],
+  ["audience", "Bearer token audience (default client ID)"], ["allow_bearer", "Accept IdP bearer tokens on /data", "bool"]];
+const SAML_FIELDS = [["idp_entity_id", "IdP entity ID"], ["idp_sso_url", "IdP SSO URL (redirect binding)"], ["idp_x509_cert", "IdP signing certificate (PEM)", "text"],
+  ["idp_slo_url", "IdP logout URL (optional)"], ["sp_entity_id", "SP entity ID (default: metadata URL)"], ["groups_attribute", "Groups attribute"],
+  ["email_attribute", "Email attribute"], ["name_attribute", "Display-name attribute"], ["attribute_names", "Extra attributes → attributes", "list"],
+  ["name_id_format", "NameID format"], ["want_assertions_signed", "Require signed assertions", "bool"], ["sp_x509_cert", "SP certificate (optional, PEM)", "text"],
+  ["sp_private_key", "SP private key (optional, PEM)", "secret-text"]];
+
+function providerForm(existing, onDone) {
+  const kind = h("select", { disabled: !!existing }, ["oidc", "saml"].map((k) => h("option", { value: k, text: k.toUpperCase(), selected: existing ? existing.kind === k : k === "oidc" })));
+  const id = h("input", { value: existing ? existing.id : "", placeholder: "okta", disabled: !!existing });
+  const name = h("input", { value: existing ? existing.display_name : "", placeholder: "Okta (staff)" });
+  const enabled = h("input", { type: "checkbox", checked: existing ? existing.enabled : true });
+  const fieldsBox = h("div", { class: "grid-form" });
+  const inputs = {};
+  function draw() {
+    clear(fieldsBox);
+    const cfg = existing ? existing.config : {};
+    for (const [key, label, type] of kind.value === "oidc" ? OIDC_FIELDS : SAML_FIELDS) {
+      const v = cfg[key];
+      let el;
+      if (type === "bool") el = h("input", { type: "checkbox", checked: v === undefined ? true : !!v });
+      else if (type === "text" || type === "secret-text") { el = h("textarea", { rows: 4, placeholder: type === "secret-text" && v && v.set ? "stored; leave blank to keep" : "" }); if (type === "text") el.value = v || ""; }
+      else if (type === "password") el = h("input", { type: "password", autocomplete: "new-password", placeholder: v && v.set ? "stored; leave blank to keep" : "" });
+      else el = h("input", { value: type === "list" ? (v || []).join(" ") : (v || "") });
+      inputs[key] = [el, type];
+      fieldsBox.append(h("label", { class: type === "bool" ? "inline" : "", style: type === "text" || type === "secret-text" ? "grid-column:1/-1" : "" }, type === "bool" ? [el, label] : [label, el]));
+    }
+  }
+  kind.addEventListener("change", draw);
+  draw();
+  async function save() {
+    const config = {};
+    for (const [key, [el, type]] of Object.entries(inputs)) {
+      if (type === "bool") config[key] = el.checked;
+      else if (type === "list") config[key] = el.value.split(/[\s,]+/).filter(Boolean);
+      else if ((type === "password" || type === "secret-text") && !el.value) continue;
+      else config[key] = el.value.trim();
+    }
+    if (existing) await guarded(() => api(`/api/sso/providers/${existing.id}`, { method: "PUT", body: { display_name: name.value, enabled: enabled.checked, config } }), "Saved");
+    else await guarded(() => api("/api/sso/providers", { method: "POST", body: { id: id.value.trim(), kind: kind.value, display_name: name.value, enabled: enabled.checked, config } }), "Created");
+    onDone();
+  }
+  return h("div", { class: "stack" },
+    h("div", { class: "grid-form" }, h("label", {}, "ID (URL slug)", id), h("label", {}, "Protocol", kind), h("label", {}, "Display name", name), h("label", { class: "inline" }, enabled, "enabled")),
+    fieldsBox,
+    existing ? h("dl", { class: "kv" },
+      existing.redirect_uri ? [h("dt", { text: "Redirect URI" }), h("dd", { class: "mono", text: existing.redirect_uri })] : null,
+      existing.acs_url ? [h("dt", { text: "ACS URL" }), h("dd", { class: "mono", text: existing.acs_url }), h("dt", { text: "SP metadata" }), h("dd", {}, h("a", { href: existing.metadata_url, target: "_blank", text: existing.metadata_url }))] : null,
+      h("dt", { text: "Login URL" }), h("dd", { class: "mono", text: existing.login_url })) : null,
+    h("div", { class: "row" }, h("button", { class: "primary", text: existing ? "Save" : "Create", onclick: save }),
+      existing ? h("button", { class: "danger", text: "Delete", onclick: async () => { await guarded(() => api(`/api/sso/providers/${existing.id}`, { method: "DELETE" }), "Deleted"); onDone(); } }) : null));
+}
+
+const POLICY_EXAMPLE = {
+  providers: [], allowed_groups: ["finance"], allowed_users: [],
+  row_filters: [{ column: "region", claim: "groups", op: "in" }],
+  unrestricted_groups: ["auditors"], columns: [], column_groups: { salary: ["hr"] }, max_rows: 10000, allow_user_filters: true,
+};
+
+async function endpointForm(existing, onDone) {
+  const slug = h("input", { value: existing ? existing.slug : "", disabled: !!existing, placeholder: "sales" });
+  const desc = h("input", { value: existing ? existing.description : "" });
+  const srcKind = h("select", {}, [["table", "Lake table / view"], ["sql", "SQL query"]].map(([v, t]) => h("option", { value: v, text: t, selected: existing ? (existing.source_sql ? v === "sql" : v === "table") : v === "table" })));
+  const views = Object.keys((App.schema && App.schema.views) || {});
+  const table = h("select", {}, views.map((v) => h("option", { value: v, text: v, selected: existing && existing.source_table === v })));
+  const sqlBox = h("div", { class: "editor small" });
+  const polBox = h("div", { class: "editor small" });
+  const enabled = h("input", { type: "checkbox", checked: existing ? existing.enabled : true });
+  const tableLabel = h("label", {}, "Source table", table);
+  const sqlLabel = h("label", { style: "grid-column:1/-1" }, "Source SQL", sqlBox);
+  const toggle = () => { tableLabel.hidden = srcKind.value !== "table"; sqlLabel.hidden = srcKind.value !== "sql"; };
+  srcKind.addEventListener("change", toggle);
+  const wrap = h("div", { class: "stack" },
+    h("div", { class: "grid-form" }, h("label", {}, "Slug", slug), h("label", {}, "Description", desc), h("label", {}, "Source", srcKind), tableLabel, h("label", { class: "inline" }, enabled, "enabled")),
+    sqlLabel,
+    h("label", {}, "Access policy (JSON) — see docs: providers, allowed_users, allowed_groups, row_filters, unrestricted_groups, columns, column_groups, max_rows", polBox));
+  toggle();
+  const sqlEd = await createEditor(sqlBox, { language: "sql", value: existing && existing.source_sql ? existing.source_sql : "SELECT * FROM documents" });
+  const polEd = await createEditor(polBox, { language: "json", value: JSON.stringify(existing ? existing.policy : POLICY_EXAMPLE, null, 2) });
+  async function save() {
+    let policy;
+    try { policy = JSON.parse(polEd.getValue()); } catch (e) { return toast("Policy is not valid JSON", true); }
+    const body = { description: desc.value, policy, enabled: enabled.checked,
+      source_table: srcKind.value === "table" ? table.value : null, source_sql: srcKind.value === "sql" ? sqlEd.getValue() : null };
+    if (existing) await guarded(() => api(`/api/data-endpoints/${existing.slug}`, { method: "PUT", body }), "Saved");
+    else await guarded(() => api("/api/data-endpoints", { method: "POST", body: { slug: slug.value.trim(), ...body } }), "Created");
+    onDone();
+  }
+  wrap.append(h("div", { class: "row" }, h("button", { class: "primary", text: existing ? "Save" : "Create", onclick: save }),
+    existing ? h("button", { class: "danger", text: "Delete", onclick: async () => { await guarded(() => api(`/api/data-endpoints/${existing.slug}`, { method: "DELETE" }), "Deleted"); onDone(); } }) : null));
+
+  if (existing) {
+    const who = h("textarea", { rows: 4, class: "mono" });
+    who.value = JSON.stringify({ provider: "okta", email: "ann@example.com", groups: ["finance", "eu"], attributes: {} }, null, 2);
+    const out = h("div");
+    wrap.append(h("h3", { text: "Simulate a caller" }), who, h("div", { class: "row" }, h("button", { text: "Evaluate policy", onclick: async () => {
+      let principal; try { principal = JSON.parse(who.value); } catch (_) { return toast("Principal must be JSON", true); }
+      const r = await guarded(() => api(`/api/data-endpoints/${existing.slug}/simulate`, { method: "POST", body: { principal } }));
+      clear(out).append(h("p", {}, badge(r.allowed ? "succeeded" : "failed"), " ", r.reason),
+        r.sql ? h("pre", { text: `${r.sql}\nparams: ${JSON.stringify(r.params)}` }) : null,
+        r.rows ? dataTable(r.columns, r.rows) : null);
+    } })), out,
+    h("p", { class: "muted" }, "Callers: ", h("code", { text: `curl -H 'Authorization: Bearer <token>' ${existing.url}?limit=100&f.<column>=<value>&format=json|csv|ndjson` })));
+  }
+  return wrap;
+}
+
+registerView("access", {
+  title: "Access", order: 60,
+  async render(root, params) {
+    await refreshSchema();
+    const [provs, eps] = await Promise.all([api("/api/sso/providers"), api("/api/data-endpoints")]);
+    const [section, sel] = params;
+    const main = h("div", { class: "stack" });
+    const side = h("div", { class: "panel stack" },
+      h("div", { class: "row" }, h("h3", { text: "Identity providers" }), h("span", { class: "spacer" }), h("button", { text: "Add", onclick: () => go("access", "provider", "_new") })),
+      h("ul", { class: "list" }, provs.items.map((p) => h("li", { class: section === "provider" && sel === p.id ? "active" : "", onclick: () => go("access", "provider", p.id) },
+        h("div", { text: p.display_name }), h("div", { class: "sub", text: `${p.kind.toUpperCase()} · ${p.id}${p.enabled ? "" : " · disabled"}` })))),
+      h("div", { class: "row" }, h("h3", { text: "Data endpoints" }), h("span", { class: "spacer" }), h("button", { text: "Add", onclick: () => go("access", "endpoint", "_new") })),
+      h("ul", { class: "list" }, eps.items.map((e) => h("li", { class: section === "endpoint" && sel === e.slug ? "active" : "", onclick: () => go("access", "endpoint", e.slug) },
+        h("div", { class: "mono", text: `/data/${e.slug}` }), h("div", { class: "sub", text: e.description || (e.source_table ? `table ${e.source_table}` : "SQL") })))),
+      h("button", { text: "Access log", onclick: () => go("access", "log") }));
+    root.append(h("div", { class: "split" }, side, main));
+    const back = () => route();
+    if (section === "provider") {
+      const p = provs.items.find((x) => x.id === sel);
+      main.append(h("section", { class: "panel stack" }, h("h2", { text: p ? p.display_name : "New identity provider" }), providerForm(p, () => go("access"))));
+    } else if (section === "endpoint") {
+      const e = eps.items.find((x) => x.slug === sel);
+      main.append(h("section", { class: "panel stack" }, h("h2", { text: e ? `/data/${e.slug}` : "New data endpoint" }), await endpointForm(e, back)));
+    } else if (section === "log") {
+      const log = await api("/api/access-log?limit=500");
+      main.append(h("section", { class: "panel stack" }, h("h2", { text: "Access log" }), h("div", { class: "scroll" },
+        dataTable([{ key: "at", label: "When" }, { key: "endpoint", label: "Endpoint" }, { key: "subject", label: "Who" }, { key: "provider", label: "IdP" },
+          { key: "allowed", label: "Result" }, { key: "rows", label: "Rows", num: true }, { key: "reason", label: "Reason" }], log.items,
+          { render: { at: (v) => fmtDate(v), allowed: (v) => badge(v ? "succeeded" : "failed") } }))));
+    } else {
+      main.append(h("section", { class: "panel stack" }, h("h2", { text: "SSO-protected data API" }),
+        h("p", { text: "Configure any number of SAML 2.0 and OpenID Connect identity providers, then publish data endpoints with per-endpoint access policies (users, groups, row filters from user claims, column restrictions)." }),
+        h("p", {}, "Users sign in at ", h("a", { href: "/sso", target: "_blank", text: "/sso" }), "; API clients use the issued bearer token or, for OIDC providers, the IdP's own JWT.")));
+    }
+  },
+});
