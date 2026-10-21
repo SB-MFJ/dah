@@ -34,6 +34,7 @@ authoritative list for its own environment at `/licenses`.
 | [jiter](https://github.com/pydantic/jiter/) | 0.17.0 | MIT |  |
 | [jsonschema](https://github.com/python-jsonschema/jsonschema) | 4.26.0 | MIT |  |
 | [jsonschema-specifications](https://github.com/python-jsonschema/jsonschema-specifications) | 2025.9.1 | MIT |  |
+| [ldap3](https://github.com/cannatag/ldap3) | 2.9.1 | LGPL-3.0-only | yes |
 | [lxml](https://github.com/lxml/lxml) | 6.1.3 | BSD-3-Clause — Statically links libxml2 / libxslt (MIT) |  |
 | [mcp](https://modelcontextprotocol.io) | 2.3.0 | MIT | yes |
 | [mcp-types](https://modelcontextprotocol.io) | 2.3.0 | MIT |  |
@@ -44,6 +45,7 @@ authoritative list for its own environment at `/licenses`.
 | [pandas](https://pandas.pydata.org) | 3.0.6 | BSD-3-Clause | yes |
 | [pillow](https://python-pillow.org) | 13.0.0 | MIT-CMU | yes |
 | [pyarrow](https://arrow.apache.org/) | 26.0.0 | Apache-2.0 | yes |
+| [pyasn1](https://github.com/pyasn1/pyasn1) | 0.6.4 | BSD-2-Clause |  |
 | [pycparser](https://github.com/eliben/pycparser) | 3.11 | BSD-3-Clause |  |
 | [pydantic](https://github.com/pydantic/pydantic) | 2.14.1 | MIT |  |
 | [pydantic_core](https://github.com/pydantic) | 2.50.1 | MIT |  |

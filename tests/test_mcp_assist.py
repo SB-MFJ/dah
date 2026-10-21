@@ -163,19 +163,34 @@ def test_mcp_tools_end_to_end(client, monkeypatch):
     assert call("get_pipeline", {"name": "cnt"})["current"]["comment"] == "AI: return 7"
 
 
-def test_mcp_http_requires_bearer(env, monkeypatch):
+INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}
+ACCEPT = {"Accept": "application/json, text/event-stream"}
+
+
+def mcp_http_call(c, token, tool, args=None):
+    """initialize + tools/call over streamable HTTP; returns the parsed tool result message."""
+    h = {**ACCEPT, "Authorization": f"Bearer {token}"}
+    r = c.post("/mcp", headers=h, json=INIT)
+    assert r.status_code == 200, r.text
+    h["mcp-session-id"] = r.headers["mcp-session-id"]
+    c.post("/mcp", headers=h, json={"jsonrpc": "2.0", "method": "notifications/initialized"})
+    r = c.post("/mcp", headers=h, json={"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": tool, "arguments": args or {}}})
+    data = [line[5:].strip() for line in r.text.splitlines() if line.startswith("data:")]
+    return json.loads(data[-1] if data else r.text)["result"]
+
+
+def test_mcp_http_requires_valid_dah_credential(client):
     from fastapi.testclient import TestClient
 
     from dah import mcp_server
 
-    monkeypatch.setenv("DAH_MCP_TOKEN", "mcp-secret")
+    from .conftest import ADMIN
+
+    mcp_server.set_client(client)
+    mcp_server._verified.clear()
     with TestClient(mcp_server.http_app()) as c:
         assert c.post("/mcp", json={}).status_code == 401
         assert c.post("/mcp", json={}, headers={"Authorization": "Bearer wrong"}).status_code == 401
-        r = c.post(
-            "/mcp",
-            headers={"Authorization": "Bearer mcp-secret", "Accept": "application/json, text/event-stream"},
-            json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                  "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}},
-        )
-        assert r.status_code == 200, r.text
+        res = mcp_http_call(c, ADMIN, "run_sql", {"sql": "SELECT 41 + 1 AS n"})
+        assert res["isError"] is False and '"n": 42' in res["content"][0]["text"]

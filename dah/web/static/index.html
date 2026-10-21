@@ -15,16 +15,7 @@
 
   <main id="view"></main>
 
-  <dialog id="login">
-    <form method="dialog" id="login-form">
-      <h2>Admin sign-in</h2>
-      <p class="muted">Paste the value of <code>DAH_ADMIN_TOKEN</code>.</p>
-      <input id="login-token" type="password" autocomplete="current-password" placeholder="admin token" required>
-      <label class="inline"><input id="login-remember" type="checkbox"> Remember on this device</label>
-      <p id="login-error" class="error" hidden></p>
-      <menu><button type="submit" class="primary">Sign in</button></menu>
-    </form>
-  </dialog>
+  <dialog id="login"><div id="login-body"></div></dialog>
 
   <div id="toast" role="status" aria-live="polite"></div>
 

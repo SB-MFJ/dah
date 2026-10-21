@@ -21,7 +21,8 @@ from .. import lake
 from ..config import get_settings
 from ..db import AccessLog, DataEndpoint, IdentityProvider, Setting, dumps, session_scope
 from ..sso import acl, core, oidc, saml
-from .deps import DB, Admin, get_db
+from ..auth.identity import AuthError, Identity, identity_for_user, issue_user_session, provision_external
+from .deps import DB, Admin, current_identity
 
 admin = APIRouter(prefix="/api", tags=["sso-admin"], dependencies=[Admin])
 public = APIRouter(tags=["sso"])
@@ -35,7 +36,7 @@ FLOW_COOKIE = "dah_sso_flow"
 
 class ProviderIn(BaseModel):
     id: str
-    kind: Literal["oidc", "saml"]
+    kind: Literal["oidc", "saml", "ldap"]
     display_name: str
     enabled: bool = True
     config: dict = Field(default_factory=dict)
@@ -48,7 +49,8 @@ class ProviderUpdate(BaseModel):
 
 
 def _check_provider_config(kind: str, cfg: dict) -> None:
-    need = ("issuer", "client_id") if kind == "oidc" else ("idp_entity_id", "idp_sso_url", "idp_x509_cert")
+    need = {"oidc": ("issuer", "client_id"), "saml": ("idp_entity_id", "idp_sso_url", "idp_x509_cert"),
+            "ldap": ("server_url", "user_search_base")}[kind]
     missing = [k for k in need if not cfg.get(k)]
     if missing:
         raise HTTPException(400, f"missing {kind} config: {missing}")
@@ -96,6 +98,29 @@ def update_provider(provider_id: str, body: ProviderUpdate, db: Session = DB):
         _check_provider_config(p.kind, cfg)
         p.config_json = core.store_config(p.kind, cfg, previous=prev)
     return core.provider_dict(p)
+
+
+@admin.post("/sso/providers/{provider_id}/test")
+def test_provider(provider_id: str, db: Session = DB):
+    """Connectivity check: LDAP service bind + search base, or OIDC discovery."""
+    p = db.get(IdentityProvider, provider_id)
+    if p is None:
+        raise HTTPException(404, "provider not found")
+    cfg = core.load_config(p)
+    if p.kind == "ldap":
+        from ..auth import ldap
+
+        return ldap.test_connection(cfg)
+    if p.kind == "oidc":
+        try:
+            return {"ok": True, "issuer": oidc.discovery(cfg).get("issuer")}
+        except oidc.OIDCError as e:
+            return {"ok": False, "error": str(e)}
+    try:
+        saml.metadata_xml(p.id, cfg)
+        return {"ok": True}
+    except saml.SAMLError as e:
+        return {"ok": False, "error": str(e)}
 
 
 @admin.delete("/sso/providers/{provider_id}")
@@ -235,41 +260,9 @@ def access_log(endpoint: str | None = None, limit: int = Query(200, le=5000), db
 # =========================================================================== principal resolution
 
 
-class Unauthenticated(HTTPException):
-    def __init__(self, detail: str = "authentication required"):
-        super().__init__(401, detail, headers={"WWW-Authenticate": "Bearer"})
-
-
-def resolve_principal(request: Request, db: Session) -> core.Principal | None:
-    token = None
-    auth = request.headers.get("authorization", "")
-    if auth.lower().startswith("bearer "):
-        token = auth[7:].strip()
-    if token:
-        p = core.verify_session(token)
-        if p is not None:
-            return p
-        iss = core.unverified_issuer(token)
-        if iss:
-            for prov in db.scalars(select(IdentityProvider).where(IdentityProvider.kind == "oidc", IdentityProvider.enabled.is_(True))):
-                cfg = core.load_config(prov)
-                if cfg.get("allow_bearer") and cfg.get("issuer", "").rstrip("/") == iss.rstrip("/"):
-                    try:
-                        return oidc.verify_bearer(prov.id, cfg, token)
-                    except oidc.OIDCError as e:
-                        raise Unauthenticated(str(e))
-        raise Unauthenticated("invalid or expired token")
-    cookie = request.cookies.get(core.SESSION_COOKIE)
-    if cookie:
-        return core.verify_session(cookie)
-    return None
-
-
-def require_principal(request: Request, db: Session = Depends(get_db)) -> core.Principal:
-    p = resolve_principal(request, db)
-    if p is None:
-        raise Unauthenticated()
-    return p
+def require_principal(ident: Identity = Depends(current_identity)) -> core.Principal:
+    """The caller as an access-policy principal (accounts carry their merged local + IdP groups)."""
+    return ident.principal()
 
 
 # =========================================================================== /data
@@ -385,8 +378,14 @@ def _cookie_secure() -> bool:
     return get_settings().public_base_url.startswith("https://")
 
 
-def _login_response(who: core.Principal, next_url: str | None) -> Response:
-    token = core.issue_session(who)
+def _login_response(db: Session, cfg: dict, who: core.Principal, next_url: str | None) -> Response:
+    """Provision / refresh the user account for this IdP identity and start a session."""
+    try:
+        user = provision_external(db, who, cfg.get("admin_groups"))
+    except AuthError as e:
+        raise HTTPException(e.status, str(e))
+    token = issue_user_session(user)
+    who = identity_for_user(user, "cookie").principal()
     if next_url:
         resp: Response = RedirectResponse(next_url, status_code=303)
     else:
@@ -416,19 +415,32 @@ def _done_page(who: core.Principal, token: str) -> str:
 
 
 @public.get("/sso", response_class=HTMLResponse)
-def login_page(next: str | None = None, db: Session = DB):
+def login_page(next: str | None = None, error: str | None = None, db: Session = DB):
+    """Standalone sign-in page (for /data users and API clients): redirect providers + password form."""
     nxt = core.safe_next(next)
+    provs = list(db.scalars(select(IdentityProvider).where(IdentityProvider.enabled.is_(True)).order_by(IdentityProvider.display_name)))
     links = "".join(
         f"<a class=btn href='/sso/{html.escape(p.id)}/login{('?next=' + html.escape(nxt)) if nxt else ''}'>{html.escape(p.display_name)} "
         f"<small>({p.kind.upper()})</small></a>"
-        for p in db.scalars(select(IdentityProvider).where(IdentityProvider.enabled.is_(True)).order_by(IdentityProvider.display_name))
+        for p in provs if p.kind != "ldap"
     )
-    return _page("Sign in", links or "<p>No identity providers are configured.</p>")
+    pw = ([("local", "Local account")] if get_settings().local_login_enabled else []) + [(p.id, p.display_name) for p in provs if p.kind == "ldap"]
+    form = ""
+    if pw:
+        options = "".join(f"<option value='{html.escape(i)}'>{html.escape(n)}</option>" for i, n in pw)
+        form = ("<form method=post action='/auth/login' style='display:grid;gap:8px;margin-top:16px'>"
+                f"<select name=provider>{options}</select><input name=username placeholder=Username autocomplete=username required>"
+                "<input name=password type=password placeholder=Password autocomplete=current-password required>"
+                f"<input type=hidden name=next value='{html.escape(nxt or '/sso/me')}'><button>Sign in</button></form>")
+    msg = {"invalid": "Invalid username or password.", "locked": "Too many attempts; try again later."}.get(error or "", "")
+    err = f"<p style='color:#c4320a'>{msg}</p>" if msg else ""
+    return _page("Sign in", err + (links + form or "<p>No sign-in methods are configured.</p>"))
 
 
 @public.get("/sso/providers")
 def public_providers(db: Session = DB):
-    return {"items": [{"id": p.id, "kind": p.kind, "display_name": p.display_name, "login_url": f"/sso/{p.id}/login"}
+    return {"items": [{"id": p.id, "kind": p.kind, "display_name": p.display_name,
+                       "login_url": "/auth/login" if p.kind == "ldap" else f"/sso/{p.id}/login"}
                       for p in db.scalars(select(IdentityProvider).where(IdentityProvider.enabled.is_(True)).order_by(IdentityProvider.id))]}
 
 
@@ -466,6 +478,8 @@ def _saml_consume(request_id: str | None) -> dict | None:
 @public.get("/sso/{provider_id}/login")
 def sso_login(provider_id: str, next: str | None = None, db: Session = DB):
     p, cfg = _provider_or_404(db, provider_id)
+    if p.kind == "ldap":
+        raise HTTPException(400, "LDAP providers use the password form: POST /auth/login")
     nxt = core.safe_next(next)
     try:
         if p.kind == "oidc":
@@ -496,7 +510,7 @@ def oidc_callback(provider_id: str, request: Request, code: str | None = None, s
         who = oidc.finish_login(p.id, cfg, code, flow)
     except oidc.OIDCError as e:
         raise HTTPException(401, str(e))
-    return _login_response(who, core.safe_next(flow.get("next")))
+    return _login_response(db, cfg, who, core.safe_next(flow.get("next")))
 
 
 def _in_response_to(saml_response_b64: str) -> str | None:
@@ -523,7 +537,7 @@ async def saml_acs(provider_id: str, request: Request, db: Session = DB):
         who = saml.finish_login(p.id, cfg, form, request_id=_in_response_to(form["SAMLResponse"]))
     except saml.SAMLError as e:
         raise HTTPException(401, str(e))
-    return _login_response(who, core.safe_next(pending.get("next")))
+    return _login_response(db, cfg, who, core.safe_next(pending.get("next")))
 
 
 @public.get("/sso/{provider_id}/metadata")
@@ -538,8 +552,8 @@ def saml_metadata(provider_id: str, db: Session = DB):
 
 
 @public.get("/sso/me")
-def me(who: core.Principal = Depends(require_principal)):
-    return who.to_dict()
+def me(ident: Identity = Depends(current_identity)):
+    return {**ident.principal().to_dict(), "account": ident.to_dict()}
 
 
 @public.api_route("/sso/logout", methods=["GET", "POST"])

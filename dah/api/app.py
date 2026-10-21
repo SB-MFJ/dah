@@ -26,10 +26,24 @@ def _include_routers(app: FastAPI) -> None:
         app.include_router(router)
 
 
+def bootstrap_admin() -> None:
+    """Create DAH_BOOTSTRAP_ADMIN_USER as a local admin on first start (no-op once it exists)."""
+    s = get_settings()
+    if not (s.bootstrap_admin_user and s.bootstrap_admin_password):
+        return
+    from ..auth.identity import create_local_user, find_user
+    from ..db import session_scope
+
+    with session_scope() as db:
+        if find_user(db, s.bootstrap_admin_user) is None:
+            create_local_user(db, s.bootstrap_admin_user, s.bootstrap_admin_password, is_admin=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     get_settings().ensure_dirs()
     engine()
+    bootstrap_admin()
     jobs.start()
     try:
         yield

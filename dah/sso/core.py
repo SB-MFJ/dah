@@ -23,7 +23,7 @@ SESSION_TYP = "dah-session"
 FLOW_TYP = "dah-sso-flow"
 
 # Config keys holding secrets: encrypted at rest and masked in API responses.
-SECRET_KEYS = {"client_secret", "sp_private_key"}
+SECRET_KEYS = {"client_secret", "sp_private_key", "bind_password"}
 
 OIDC_DEFAULTS = {
     "issuer": "",
@@ -37,6 +37,7 @@ OIDC_DEFAULTS = {
     "attribute_claims": [],  # extra claims copied into principal.attributes
     "allow_bearer": True,  # accept IdP-issued JWT access/ID tokens directly on /data
     "audience": "",  # expected aud for bearer tokens (default client_id)
+    "admin_groups": [],  # IdP groups that make the user a site administrator
 }
 SAML_DEFAULTS = {
     "idp_entity_id": "",
@@ -53,6 +54,27 @@ SAML_DEFAULTS = {
     "attribute_names": [],  # extra attributes copied into principal.attributes
     "want_assertions_signed": True,
     "want_messages_signed": False,
+    "admin_groups": [],
+}
+LDAP_DEFAULTS = {
+    "server_url": "",  # ldap://host:389 or ldaps://host:636
+    "start_tls": False,
+    "tls_verify": True,
+    "ca_cert_file": "",
+    "bind_dn": "",  # service account used to search for the user
+    "bind_password": "",
+    "user_search_base": "",
+    "username_attribute": "uid",  # sAMAccountName for Active Directory
+    "user_filter": "",  # default: (<username_attribute>={username})
+    "email_attribute": "mail",
+    "name_attribute": "cn",
+    "groups_attribute": "memberOf",
+    "group_search_base": "",  # optional group search
+    "group_filter": "(|(member={user_dn})(uniqueMember={user_dn}))",
+    "group_name_attribute": "cn",
+    "attribute_names": [],
+    "admin_groups": [],
+    "timeout_s": 10,
 }
 
 
@@ -79,7 +101,7 @@ class Principal:
 
 
 def defaults_for(kind: str) -> dict:
-    return dict(OIDC_DEFAULTS if kind == "oidc" else SAML_DEFAULTS)
+    return dict({"oidc": OIDC_DEFAULTS, "saml": SAML_DEFAULTS, "ldap": LDAP_DEFAULTS}[kind])
 
 
 def store_config(kind: str, cfg: dict, previous: dict | None = None) -> str:
@@ -115,6 +137,8 @@ def provider_dict(p: IdentityProvider) -> dict:
          "login_url": f"{base}/sso/{p.id}/login"}
     if p.kind == "oidc":
         d["redirect_uri"] = f"{base}/sso/{p.id}/callback"
+    elif p.kind == "ldap":
+        d.pop("login_url")
     else:
         d["acs_url"] = f"{base}/sso/{p.id}/acs"
         d["metadata_url"] = f"{base}/sso/{p.id}/metadata"
@@ -138,20 +162,28 @@ def _key(purpose: str) -> bytes:
     return _signing_key(get_settings().secret_key, purpose)
 
 
-def issue_session(p: Principal, ttl: int | None = None) -> str:
+def issue_session(p: Principal, ttl: int | None = None, uid: str | None = None, sv: int | None = None) -> str:
+    """Signed session token. ``uid``/``sv`` bind it to a user account and its session version."""
     now = int(time.time())
     ttl = ttl or get_settings().session_ttl_s
     claims = {"typ": SESSION_TYP, "iat": now, "exp": now + ttl, "sub": p.subject, "idp": p.provider,
               "email": p.email, "name": p.name, "groups": p.groups, "attrs": p.attributes}
+    if uid is not None:
+        claims.update(uid=uid, sv=sv)
     return jwt.encode(claims, _key("session"), algorithm="HS256")
 
 
-def verify_session(token: str) -> Principal | None:
+def decode_session(token: str) -> dict | None:
     try:
         c = jwt.decode(token, _key("session"), algorithms=["HS256"], options={"require": ["exp", "sub", "typ"]})
     except jwt.PyJWTError:
         return None
-    if c.get("typ") != SESSION_TYP:
+    return c if c.get("typ") == SESSION_TYP else None
+
+
+def verify_session(token: str) -> Principal | None:
+    c = decode_session(token)
+    if c is None:
         return None
     return Principal(subject=c["sub"], provider=c.get("idp", ""), email=c.get("email"), name=c.get("name"),
                      groups=list(c.get("groups") or []), attributes=dict(c.get("attrs") or {}))

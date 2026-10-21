@@ -51,6 +51,7 @@ main { padding: 20px; max-width: 1600px; margin: 0 auto; }
 
 button, .button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
 button:hover { border-color: var(--muted); }
+a.button { display: inline-block; text-decoration: none; text-align: center; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 button.danger { color: var(--bad); }
 button.ghost { border-color: transparent; background: transparent; }

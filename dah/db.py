@@ -301,3 +301,77 @@ def session_scope() -> Iterator[Session]:
         raise
     finally:
         s.close()
+
+
+# --------------------------------------------------------------------------- users & permissions
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    username: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True, index=True)
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # "local" or the identity provider id that provisioned the account
+    source: Mapped[str] = mapped_column(String(64), default="local")
+    external_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    groups_json: Mapped[str] = mapped_column(Text, default="[]")  # admin-assigned groups
+    idp_groups_json: Mapped[str] = mapped_column(Text, default="[]")  # from the IdP at last login
+    attributes_json: Mapped[str] = mapped_column(Text, default="{}")  # IdP attributes at last login
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    idp_admin: Mapped[bool] = mapped_column(Boolean, default=False)  # via provider admin_groups
+    disabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # bumped on password change / disable to invalidate outstanding sessions
+    session_version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (UniqueConstraint("source", "external_id"),)
+
+    @property
+    def local_groups(self) -> list[str]:
+        return json.loads(self.groups_json or "[]")
+
+    @property
+    def idp_groups(self) -> list[str]:
+        return json.loads(self.idp_groups_json or "[]")
+
+    @property
+    def groups(self) -> list[str]:
+        return sorted(set(self.local_groups) | set(self.idp_groups))
+
+    @property
+    def attributes(self) -> dict:
+        return json.loads(self.attributes_json or "{}")
+
+    @property
+    def admin(self) -> bool:
+        return bool(self.is_admin or self.idp_admin)
+
+
+class ApiToken(Base):
+    __tablename__ = "api_tokens"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    prefix: Mapped[str] = mapped_column(String(16))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class FolderGrant(Base):
+    __tablename__ = "folder_grants"
+    __table_args__ = (UniqueConstraint("path", "principal_type", "principal"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    path: Mapped[str] = mapped_column(String(1024), index=True)  # "" = root; applies to all subfolders
+    principal_type: Mapped[str] = mapped_column(String(16))  # user | group | authenticated
+    principal: Mapped[str] = mapped_column(String(320), default="")
+    level: Mapped[str] = mapped_column(String(8))  # read | write | manage
+    created_by: Mapped[str] = mapped_column(String(255), default="admin")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

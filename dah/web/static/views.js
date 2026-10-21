@@ -202,7 +202,7 @@ function schemaTree(onPick) {
 const PipelinePanels = [];
 
 registerView("pipelines", {
-  title: "Pipelines", order: 30,
+  title: "Pipelines", order: 30, admin: true,
   async render(root, params) {
     await refreshSchema();
     const [list, templates] = await Promise.all([api("/api/pipelines"), api("/api/pipelines/templates")]);
@@ -324,7 +324,7 @@ async function pipelineEditor(main, name, templates) {
 const TablePanels = [];
 
 registerView("tables", {
-  title: "Tables", order: 40,
+  title: "Tables", order: 40, admin: true,
   async render(root, params) {
     const data = await api("/api/tables");
     const sel = params[0];
@@ -470,7 +470,7 @@ PipelinePanels.unshift({
 });
 
 registerView("settings", {
-  title: "Settings", order: 70,
+  title: "Settings", order: 70, admin: true,
   async render(root) {
     const s = await api("/api/settings/ml");
     const provider = h("select", {}, [["anthropic", "Anthropic (Claude)"], ["openai_compatible", "OpenAI-compatible (self-hosted)"]].map(([v, t]) => h("option", { value: v, text: t, selected: s.provider === v })));
@@ -613,7 +613,7 @@ async function endpointForm(existing, onDone) {
 }
 
 registerView("access", {
-  title: "Access", order: 60,
+  title: "Access", order: 60, admin: true,
   async render(root, params) {
     await refreshSchema();
     const [provs, eps] = await Promise.all([api("/api/sso/providers"), api("/api/data-endpoints")]);
@@ -669,5 +669,111 @@ registerView("licenses", {
             name: (v, r) => link(v, r.url), direct: (v) => (v ? "yes" : ""),
             license: (v, r) => h("span", {}, v, r.open_source ? null : [" ", badge("failed")], r.note ? h("div", { class: "sub muted", text: r.note }) : null),
             text: (_, r) => r.has_license_text ? link("license text", `/api/licenses/${encodeURIComponent(r.name)}/text`) : "" } }))));
+  },
+});
+
+/* ================================================================ Account + users */
+
+function confirmAction(title, text, label, onConfirm) {
+  const dlg = h("dialog", {}, h("form", { method: "dialog" }, h("h2", { text: title }), h("p", { text }),
+    h("menu", {}, h("button", { value: "cancel", text: "Cancel" }), h("button", { class: "danger", value: "ok", text: label }))));
+  document.body.append(dlg);
+  dlg.addEventListener("close", async () => { if (dlg.returnValue === "ok") await onConfirm(); dlg.remove(); });
+  dlg.showModal();
+}
+
+registerView("account", {
+  title: "Account", order: 95,
+  async render(root) {
+    const me = App.me;
+    const panels = [h("section", { class: "panel stack", style: "max-width:760px" }, h("h2", { text: "Your account" }),
+      h("dl", { class: "kv" },
+        h("dt", { text: "Username" }), h("dd", { text: me.username }),
+        h("dt", { text: "Name" }), h("dd", { text: me.name || "" }),
+        h("dt", { text: "Email" }), h("dd", { text: me.email || "" }),
+        h("dt", { text: "Signed in via" }), h("dd", { text: me.provider }),
+        h("dt", { text: "Role" }), h("dd", { text: me.is_admin ? "administrator" : "user" }),
+        h("dt", { text: "Groups" }), h("dd", {}, me.groups.length ? me.groups.map((g) => [h("span", { class: "badge", text: g }), " "]) : "none")))];
+
+    if (me.user_id && me.provider === "local") {
+      const cur = h("input", { type: "password", autocomplete: "current-password", placeholder: "current password" });
+      const nw = h("input", { type: "password", autocomplete: "new-password", placeholder: "new password (10+ characters)" });
+      panels.push(h("section", { class: "panel stack", style: "max-width:760px" }, h("h3", { text: "Change password" }),
+        h("p", { class: "muted", text: "Signs you out on every other device." }), cur, nw,
+        h("div", { class: "row" }, h("button", { class: "primary", text: "Change password", onclick: async () => {
+          await guarded(() => api("/auth/password", { method: "POST", body: { current_password: cur.value, new_password: nw.value } }), "Password changed");
+          cur.value = nw.value = "";
+        } }))));
+    }
+
+    if (me.user_id) {
+      const list = h("div");
+      const name = h("input", { placeholder: "token name, e.g. claude-desktop" });
+      const days = h("input", { type: "number", min: 1, placeholder: "expires in days (blank = never)" });
+      const shown = h("div");
+      async function load() {
+        const r = await api("/auth/tokens");
+        clear(list).append(dataTable([{ key: "name", label: "Name" }, { key: "prefix", label: "Token" }, { key: "created_at", label: "Created" },
+          { key: "last_used_at", label: "Last used" }, { key: "expires_at", label: "Expires" }, { key: "act", label: "" }],
+          r.items.map((t) => ({ ...t, act: t })), { render: {
+            prefix: (v) => h("code", { text: v + "…" }), created_at: fmtDate, last_used_at: fmtDate, expires_at: (v) => v ? fmtDate(v) : "never",
+            act: (t) => h("button", { class: "danger", text: "Revoke", onclick: async () => { await guarded(() => api(`/auth/tokens/${t.id}`, { method: "DELETE" }), "Revoked"); load(); } }) } }));
+      }
+      panels.push(h("section", { class: "panel stack", style: "max-width:960px" }, h("h3", { text: "Personal API tokens" }),
+        h("p", { class: "muted", text: "Use for scripts and MCP clients (Authorization: Bearer <token>). Tokens act with your permissions." }),
+        h("div", { class: "row" }, name, days, h("button", { class: "primary", text: "Create token", onclick: async () => {
+          const t = await guarded(() => api("/auth/tokens", { method: "POST", body: { name: name.value || "token", expires_in_days: days.value ? Number(days.value) : null } }));
+          clear(shown).append(h("p", { text: "Copy this token now; it won't be shown again:" }), h("pre", { text: t.token }));
+          name.value = days.value = ""; load();
+        } })), shown, list));
+      await load();
+    }
+    root.append(h("div", { class: "stack" }, panels));
+  },
+});
+
+registerView("users", {
+  title: "Users", order: 65, admin: true,
+  async render(root, params) {
+    const data = await api("/api/users");
+    const sel = params[0];
+    const side = h("div", { class: "panel stack" },
+      h("div", { class: "row" }, h("h3", { text: "Users" }), h("span", { class: "spacer" }), h("button", { class: "primary", text: "New", onclick: () => go("users", "_new") })),
+      h("ul", { class: "list" }, data.items.map((u) => h("li", { class: u.id === sel ? "active" : "", onclick: () => go("users", u.id) },
+        h("div", {}, u.username, " ", u.admin ? badge("admin") : null, u.disabled ? badge("disabled") : null),
+        h("div", { class: "sub", text: `${u.source}${u.email ? " · " + u.email : ""}` })))));
+    const main = h("div", { class: "stack" });
+    root.append(h("div", { class: "split" }, side, main));
+    if (!sel) return main.append(h("section", { class: "panel" }, h("p", { class: "muted", text: "Local accounts sign in with a password. Accounts from OIDC, SAML and LDAP are created automatically on first sign-in; their IdP groups refresh at every sign-in. Add local groups here to grant folder permissions." })));
+
+    const u = data.items.find((x) => x.id === sel);
+    const username = h("input", { value: u ? u.username : "", disabled: !!u });
+    const email = h("input", { value: u ? u.email || "" : "" });
+    const name = h("input", { value: u ? u.display_name || "" : "" });
+    const groups = h("input", { value: u ? u.local_groups.join(", ") : "", placeholder: "finance, legal" });
+    const admin = h("input", { type: "checkbox", checked: u ? u.is_admin : false });
+    const disabled = h("input", { type: "checkbox", checked: u ? u.disabled : false });
+    const pw = h("input", { type: "password", autocomplete: "new-password", placeholder: u ? "set new password" : "initial password" });
+    const g = () => groups.value.split(",").map((x) => x.trim()).filter(Boolean);
+    async function save() {
+      if (!u) {
+        const r = await guarded(() => api("/api/users", { method: "POST", body: { username: username.value.trim(), password: pw.value || null, email: email.value || null, display_name: name.value || null, groups: g(), is_admin: admin.checked } }), "Created");
+        return go("users", r.id);
+      }
+      await guarded(() => api(`/api/users/${u.id}`, { method: "PUT", body: { email: email.value || null, display_name: name.value || null, groups: g(), is_admin: admin.checked, disabled: disabled.checked } }), "Saved");
+      if (pw.value) await guarded(() => api(`/api/users/${u.id}/password`, { method: "POST", body: { password: pw.value } }), "Password set");
+      route();
+    }
+    main.append(h("section", { class: "panel stack", style: "max-width:860px" },
+      h("h2", { text: u ? u.username : "New local user" }),
+      u ? h("p", { class: "muted", text: `Source: ${u.source}${u.idp_groups.length ? " · IdP groups: " + u.idp_groups.join(", ") : ""}${u.idp_admin ? " · admin via IdP group" : ""} · last sign-in ${u.last_login_at ? fmtDate(u.last_login_at) : "never"}` }) : null,
+      h("div", { class: "grid-form" }, h("label", {}, "Username", username), h("label", {}, "Email", email), h("label", {}, "Display name", name),
+        h("label", {}, "Local groups (comma separated)", groups), (!u || u.source === "local") ? h("label", {}, "Password", pw) : null),
+      h("div", { class: "row" }, h("label", { class: "inline" }, admin, "administrator"), u ? h("label", { class: "inline" }, disabled, "disabled") : null),
+      h("div", { class: "row" }, h("button", { class: "primary", text: u ? "Save" : "Create", onclick: save }),
+        u ? h("button", { text: "Sign out everywhere", onclick: () => guarded(() => api(`/api/users/${u.id}/revoke-sessions`, { method: "POST" }), "Sessions revoked") }) : null,
+        u ? h("button", { class: "danger", text: "Delete…", onclick: () => confirmAction(`Delete ${u.username}?`,
+          "Removes the account and its API tokens. External users are re-created if they sign in again; disable them instead to block access.", "Delete",
+          async () => { await guarded(() => api(`/api/users/${u.id}`, { method: "DELETE" }), "Deleted"); go("users"); }) }) : null)));
   },
 });

@@ -34,8 +34,13 @@ class Settings(BaseSettings):
     pipeline_timeout_s: int = 300
     pipeline_memory_mb: int = 2048
 
-    # SSO
+    # Accounts / SSO
     session_ttl_s: int = 8 * 3600
+    local_login_enabled: bool = True
+    password_min_length: int = 10
+    # Created as a local admin at startup if no user with this name exists.
+    bootstrap_admin_user: str | None = None
+    bootstrap_admin_password: str | None = None
 
     @property
     def blob_dir(self) -> Path:

@@ -2,9 +2,10 @@
 "use strict";
 
 const App = {
-  views: {},          // name -> {title, order, render(root, params)}
+  views: {},          // name -> {title, order, admin?, render(root, params)}
   schema: null,       // /api/schema, used by editor autocomplete
-  token: null,
+  token: null,        // only for "admin token" sign-in; accounts use an HttpOnly session cookie
+  me: null,           // /auth/me
 };
 
 /* ---------------------------------------------------------------- DOM */
@@ -108,8 +109,9 @@ function saveToken(tok, remember) {
   try { if (remember) localStorage.setItem("dah.token", tok); else localStorage.removeItem("dah.token"); } catch (_) {}
 }
 
-function logout() {
-  App.token = null;
+async function logout() {
+  if (!App.token) await fetch("/auth/logout", { method: "POST", headers: { "X-DAH-CSRF": "1" } });
+  App.token = null; App.me = null;
   sessionStorage.removeItem("dah.token");
   try { localStorage.removeItem("dah.token"); } catch (_) {}
   showLogin();
@@ -120,7 +122,7 @@ class ApiError extends Error {
 }
 
 async function api(path, { method = "GET", body, form, raw } = {}) {
-  const headers = {};
+  const headers = { "X-DAH-CSRF": "1" };
   if (App.token) headers["Authorization"] = `Bearer ${App.token}`;
   let payload;
   if (form) payload = form;
@@ -146,19 +148,68 @@ async function refreshSchema() {
 
 /* ---------------------------------------------------------------- auth */
 
-function showLogin() {
-  const dlg = document.getElementById("login");
-  if (!dlg.open) dlg.showModal();
-  document.getElementById("logout").hidden = true;
-  document.getElementById("whoami").textContent = "";
+async function refreshMe() {
+  const headers = App.token ? { Authorization: `Bearer ${App.token}` } : {};
+  const res = await fetch("/auth/me", { headers });
+  App.me = res.ok ? await res.json() : null;
+  const who = document.getElementById("whoami");
+  who.textContent = App.me ? `${App.me.name || App.me.username}${App.me.is_admin ? " · admin" : ""}` : "";
+  document.getElementById("logout").hidden = !App.me;
+  return App.me;
 }
 
-async function tryLogin(tok, remember) {
-  const res = await fetch("/api/schema", { headers: { Authorization: `Bearer ${tok}` } });
-  if (!res.ok) return false;
-  saveToken(tok, remember);
-  App.schema = await res.json();
-  return true;
+async function afterLogin() {
+  document.getElementById("login").close();
+  await refreshSchema();
+  route();
+}
+
+async function showLogin() {
+  const dlg = document.getElementById("login");
+  const body = clear(document.getElementById("login-body"));
+  App.me = null;
+  document.getElementById("logout").hidden = true;
+  document.getElementById("whoami").textContent = "";
+  let methods = { password: [], redirect: [] };
+  try { methods = await (await fetch("/auth/methods")).json(); } catch (_) {}
+  const err = h("p", { class: "error", hidden: true });
+  const fail = (m) => { err.textContent = m; err.hidden = false; };
+
+  const user = h("input", { placeholder: "username", autocomplete: "username", required: true });
+  const pass = h("input", { type: "password", placeholder: "password", autocomplete: "current-password", required: true });
+  const prov = h("select", {}, methods.password.map((m) => h("option", { value: m.id, text: m.display_name })));
+  const pwForm = h("form", { class: "stack" },
+    methods.password.length > 1 ? h("label", {}, "Sign in with", prov) : null, user, pass,
+    h("menu", {}, h("button", { type: "submit", class: "primary", text: "Sign in" })));
+  pwForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const res = await fetch("/auth/login", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: user.value.trim(), password: pass.value, provider: prov.value || "local" }) });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); return fail(d.detail || "Sign-in failed"); }
+    App.token = null;
+    await refreshMe();
+    afterLogin();
+  });
+
+  const tok = h("input", { type: "password", placeholder: "DAH_ADMIN_TOKEN", autocomplete: "off" });
+  const remember = h("input", { type: "checkbox" });
+  const tokForm = h("form", { class: "stack" }, tok, h("label", { class: "inline" }, remember, "Remember on this device"),
+    h("menu", {}, h("button", { type: "submit", text: "Use token" })));
+  tokForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    saveToken(tok.value.trim(), remember.checked);
+    if (!(await refreshMe())) { App.token = null; return fail("Token rejected."); }
+    afterLogin();
+  });
+
+  body.append(h("div", { class: "stack" },
+    h("h2", { text: "Sign in" }), err,
+    methods.password.length ? pwForm : null,
+    methods.redirect.length ? h("div", { class: "stack" }, h("p", { class: "muted", text: "Or continue with" }),
+      methods.redirect.map((m) => h("a", { class: "button", href: `${m.login_url}?next=${encodeURIComponent("/" + location.hash)}`, text: `${m.display_name} (${m.kind.toUpperCase()})` }))) : null,
+    h("details", {}, h("summary", { class: "muted", text: "Administrator token" }), tokForm)));
+  if (!dlg.open) dlg.showModal();
+  user.focus();
 }
 
 /* ---------------------------------------------------------------- routing */
@@ -173,12 +224,13 @@ function go(name, ...params) { location.hash = [name, ...params.map(encodeURICom
 function renderNav() {
   const nav = clear(document.getElementById("nav"));
   const { name } = parseHash();
-  Object.entries(App.views).sort((a, b) => a[1].order - b[1].order).forEach(([key, v]) =>
-    nav.append(h("a", { href: `#${key}`, class: key === name ? "active" : "", text: v.title })));
+  Object.entries(App.views).filter(([, v]) => !v.admin || (App.me && App.me.is_admin))
+    .sort((a, b) => a[1].order - b[1].order).forEach(([key, v]) =>
+      nav.append(h("a", { href: `#${key}`, class: key === name ? "active" : "", text: v.title })));
 }
 
 async function route() {
-  if (!App.token) return showLogin();
+  if (!App.me) return showLogin();
   renderNav();
   const { name, params } = parseHash();
   const view = App.views[name] || App.views.documents;
@@ -193,26 +245,6 @@ window.addEventListener("hashchange", route);
 window.addEventListener("DOMContentLoaded", async () => {
   loadToken();
   document.getElementById("logout").addEventListener("click", logout);
-  document.getElementById("login-form").addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    const tok = document.getElementById("login-token").value.trim();
-    const ok = await tryLogin(tok, document.getElementById("login-remember").checked);
-    const err = document.getElementById("login-error");
-    if (!ok) { err.textContent = "Token rejected."; err.hidden = false; return; }
-    err.hidden = true;
-    document.getElementById("login").close();
-    document.getElementById("logout").hidden = false;
-    document.getElementById("whoami").textContent = "admin";
-    route();
-  });
-  let remembered = false;
-  try { remembered = !!localStorage.getItem("dah.token"); } catch (_) {}
-  if (App.token && await tryLogin(App.token, remembered)) {
-    document.getElementById("logout").hidden = false;
-    document.getElementById("whoami").textContent = "admin";
-    route();
-  } else {
-    App.token = null;
-    showLogin();
-  }
+  if (await refreshMe()) { await refreshSchema(); route(); }
+  else { App.token = null; showLogin(); }
 });

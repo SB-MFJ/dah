@@ -222,7 +222,7 @@ def test_oidc_login_flow(client, anon, idp, sales):
     r = anon.get("/sso/okta/callback", params={"code": "the-code", "state": q["state"]}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/data/sales"
     me = anon.get("/sso/me").json()
-    assert me["email"] == "ann@x.org" and me["groups"] == ["finance", "eu"] and me["attributes"] == {"department": "fin"}
+    assert me["email"] == "ann@x.org" and sorted(me["groups"]) == ["eu", "finance"] and me["attributes"] == {"department": "fin"}
     assert anon.get("/data/sales").json()["rows"] == [{"region": "eu", "owner": "ann@x.org", "amount": 100}]
     anon.post("/sso/logout")
     anon.cookies.clear()
@@ -317,7 +317,7 @@ def test_saml_metadata_login_and_acs(client, anon, saml_idp, sales):
     assert r.status_code == 303, r.text
     assert r.headers["location"] == "/data/sales"
     me = anon.get("/sso/me").json()
-    assert me["provider"] == "corp-saml" and me["email"] == "ann@x.org" and me["groups"] == ["finance", "eu"]
+    assert me["provider"] == "corp-saml" and me["email"] == "ann@x.org" and sorted(me["groups"]) == ["eu", "finance"]
     assert [x["region"] for x in anon.get("/data/sales").json()["rows"]] == ["eu"]
 
     # replaying the same response fails (request id consumed)

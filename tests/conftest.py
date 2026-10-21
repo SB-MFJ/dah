@@ -14,8 +14,11 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("DAH_PUBLIC_BASE_URL", "http://testserver")
     from dah import config, db
 
+    from dah.auth import identity
+
     config.get_settings.cache_clear()
     db.reset_engine()
+    identity._failures.clear()
     yield tmp_path
     db.reset_engine()
     config.get_settings.cache_clear()

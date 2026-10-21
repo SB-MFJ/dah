@@ -18,3 +18,7 @@ separate local git commit.
 All eight features: COMPLETE (2026-10-21). Test suite: 49 passed, 1 skipped (OCR test needs tesseract).
 Commit order: 01 → 02 → 03 → 04 → 06 → 05 → 08 → 07 (versioning before MCP so MCP could expose restore;
 licenses last so the inventory covers every dependency).
+
+| 09 | Local auth, users, API tokens | [09-local-auth/status.md](09-local-auth/status.md) |
+| 10 | Site login via OIDC / SAML / LDAP | [10-site-sso-ldap/status.md](10-site-sso-ldap/status.md) |
+| 11 | Per-folder permissions | [11-folder-permissions/status.md](11-folder-permissions/status.md) |

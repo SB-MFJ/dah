@@ -34,6 +34,7 @@ dependencies = [
   "anthropic>=2.0",
   "mcp>=2.3",
   "cryptography>=43",
+  "ldap3>=2.9",
   "pyjwt[crypto]>=2.9",
 ]
 

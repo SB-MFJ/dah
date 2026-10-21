@@ -1,14 +1,13 @@
-"""Shared FastAPI dependencies."""
+"""Shared FastAPI dependencies: database session and caller identity / roles."""
 
 from __future__ import annotations
 
-import hmac
 from typing import Iterator
 
-from fastapi import Depends, Header, HTTPException, Query, status
+from fastapi import Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
-from ..config import get_settings
+from ..auth.identity import AuthError, Identity, authenticate
 from ..db import session_scope
 
 
@@ -17,21 +16,34 @@ def get_db() -> Iterator[Session]:
         yield s
 
 
-def require_admin(
-    authorization: str | None = Header(default=None),
-    x_api_key: str | None = Header(default=None),
-) -> str:
-    """Admin API auth: ``Authorization: Bearer <DAH_ADMIN_TOKEN>`` or ``X-API-Key``."""
-    token = x_api_key
-    if authorization and authorization.lower().startswith("bearer "):
-        token = authorization[7:].strip()
-    expected = get_settings().admin_token
-    if not token or not hmac.compare_digest(token.encode(), expected.encode()):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "admin token required", headers={"WWW-Authenticate": "Bearer"})
-    return "admin"
+def optional_identity(request: Request, db: Session = Depends(get_db)) -> Identity | None:
+    try:
+        return authenticate(request, db)
+    except AuthError as e:
+        raise HTTPException(e.status, str(e), headers={"WWW-Authenticate": "Bearer"} if e.status == 401 else None)
+
+
+def current_identity(ident: Identity | None = Depends(optional_identity)) -> Identity:
+    if ident is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "authentication required", headers={"WWW-Authenticate": "Bearer"})
+    return ident
+
+
+def require_admin(ident: Identity = Depends(current_identity)) -> Identity:
+    if not ident.is_admin:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "administrator access required")
+    return ident
+
+
+def require_account(ident: Identity = Depends(current_identity)) -> Identity:
+    """Caller must be a user account (not the admin token or an IdP-only principal)."""
+    if ident.user_id is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "this action needs a user account (sign in as a user)")
+    return ident
 
 
 Admin = Depends(require_admin)
+Caller = Depends(current_identity)
 DB = Depends(get_db)
 
 

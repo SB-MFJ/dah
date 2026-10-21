@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import get_settings
-from .db import Document, DocumentVersion, LakeTable, LakeTableVersion, Pipeline, utcnow
+from .db import Document, DocumentVersion, LakeTable, LakeTableVersion, utcnow
 from .pipelines import service as pipelines
 
 
