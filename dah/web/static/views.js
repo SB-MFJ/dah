@@ -436,3 +436,67 @@ TablePanels.push({
       preview);
   },
 });
+
+/* ================================================================ ML assistant */
+
+PipelinePanels.unshift({
+  forNew: true,
+  async render({ pipeline: p, editor, form }) {
+    const instr = h("textarea", { rows: 3, placeholder: "e.g. only include PDFs with more than 5 pages and add the author's email domain as a column" });
+    const out = h("div", { class: "stack" });
+    const btn = h("button", { class: "primary", text: "Propose change" });
+    btn.addEventListener("click", async () => {
+      if (!instr.value.trim()) return;
+      btn.disabled = true; btn.textContent = "Thinking…";
+      clear(out);
+      try {
+        const f = form();
+        const r = await api("/api/assist/pipeline", { method: "POST", body: { kind: f.kind, code: editor.getValue(), instruction: instr.value, pipeline: p ? p.name : null } });
+        const errs = r.problems.filter((x) => x.severity === "error");
+        out.append(
+          h("div", { class: "row" }, h("h3", { text: "Proposed change" }), h("span", { class: "muted", text: r.usage && r.usage.model ? r.usage.model : "" }), h("span", { class: "spacer" }),
+            errs.length ? h("span", { class: "error", text: `${errs.length} validation error(s)` }) : badge("valid"),
+            h("button", { class: "primary", text: "Apply to editor", onclick: () => { editor.setValue(r.code); toast("Applied to editor. Review, then Save version."); } })),
+          r.explanation ? h("pre", { text: r.explanation }) : null,
+          diffView(editor.getValue(), r.code));
+      } catch (e) {
+        out.append(h("p", { class: "error", text: e.message }), e.status === 400 ? h("a", { href: "#settings", text: "Open ML settings" }) : null);
+      } finally { btn.disabled = false; btn.textContent = "Propose change"; }
+    });
+    return h("section", { class: "panel stack" }, h("h3", { text: "Ask AI to edit this pipeline" }),
+      h("p", { class: "muted", text: "Uses the ML provider configured in Settings. The proposal is shown as a diff and is never saved automatically." }),
+      instr, h("div", { class: "row" }, btn), out);
+  },
+});
+
+registerView("settings", {
+  title: "Settings", order: 70,
+  async render(root) {
+    const s = await api("/api/settings/ml");
+    const provider = h("select", {}, [["anthropic", "Anthropic (Claude)"], ["openai_compatible", "OpenAI-compatible (self-hosted)"]].map(([v, t]) => h("option", { value: v, text: t, selected: s.provider === v })));
+    const model = h("input", { value: s.model });
+    const baseUrl = h("input", { value: s.base_url, placeholder: "optional; required for openai_compatible" });
+    const effort = h("select", {}, ["low", "medium", "high", "xhigh", "max"].map((v) => h("option", { value: v, text: v, selected: s.effort === v })));
+    const maxTokens = h("input", { type: "number", value: s.max_tokens, min: 1024 });
+    const fallbacks = h("input", { type: "checkbox", checked: s.fallbacks });
+    const key = h("input", { type: "password", autocomplete: "new-password", placeholder: s.api_key_set ? `stored (${s.api_key_hint}); leave blank to keep` : "paste API key" });
+    async function save(clearKey) {
+      const body = { provider: provider.value, model: model.value.trim(), base_url: baseUrl.value.trim(), effort: effort.value, max_tokens: Number(maxTokens.value), fallbacks: fallbacks.checked };
+      if (clearKey) body.api_key = ""; else if (key.value) body.api_key = key.value;
+      await guarded(() => api("/api/settings/ml", { method: "PUT", body }), clearKey ? "API key removed" : "Saved");
+      route();
+    }
+    root.append(h("section", { class: "panel stack", style: "max-width:760px" },
+      h("h2", { text: "ML assistant" }),
+      h("p", { class: "muted", text: "Used by the pipeline editor's “Ask AI” panel and the MCP tool assist_edit_pipeline. The key is encrypted at rest with DAH_SECRET_KEY and never sent back to the browser." }),
+      h("div", { class: "grid-form" },
+        h("label", {}, "Provider", provider), h("label", {}, "Model", model), h("label", {}, "Base URL", baseUrl),
+        h("label", {}, "Effort", effort), h("label", {}, "Max output tokens", maxTokens), h("label", {}, "API key", key)),
+      h("label", { class: "inline" }, fallbacks, "Anthropic server-side fallback when a request is declined (beta)"),
+      h("div", { class: "row" }, h("button", { class: "primary", text: "Save", onclick: () => save(false) }),
+        s.api_key_set ? h("button", { class: "danger", text: "Remove key", onclick: () => save(true) }) : null)),
+      h("section", { class: "panel stack", style: "max-width:760px" }, h("h2", { text: "MCP server" }),
+        h("p", { text: "Connect MCP clients to the dah MCP server (docker-compose service “mcp”)." }),
+        h("pre", { text: "Streamable HTTP: http://<host>:8001/mcp\nHeader:        Authorization: Bearer <DAH_MCP_TOKEN or DAH_ADMIN_TOKEN>\n\nstdio (local):  DAH_API_URL=http://localhost:8000 DAH_ADMIN_TOKEN=… dah-mcp" })));
+  },
+});
