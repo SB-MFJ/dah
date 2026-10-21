@@ -1,0 +1,41 @@
+services:
+  app:
+    build: .
+    image: dah:latest
+    env_file: .env
+    environment:
+      DAH_DATA_DIR: /data
+    ports:
+      - "8000:8000"
+    volumes:
+      - dah-data:/data
+    restart: unless-stopped
+
+  # MCP server (streamable HTTP at http://localhost:8001/mcp). It talks to the app over its REST API.
+  mcp:
+    image: dah:latest
+    depends_on: [app]
+    env_file: .env
+    environment:
+      DAH_API_URL: http://app:8000
+    command: ["dah", "mcp", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8001"]
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+
+  # Optional external catalog: `docker compose --profile postgres up` and set
+  # DAH_DATABASE_URL=postgresql+psycopg://dah:dah@postgres:5432/dah in .env
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: dah
+      POSTGRES_PASSWORD: dah
+      POSTGRES_DB: dah
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  dah-data:
+  pg-data:

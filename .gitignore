@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+/data/
+.env
+.pytest_cache/
+*.egg-info/
+build/
+dah/web/static/vendor/

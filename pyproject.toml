@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dah"
+version = "0.1.0"
+description = "Self-hosted document lakehouse: ingest, OCR, transform, version and serve data behind SSO."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "python-multipart>=0.0.9",
+  "sqlalchemy>=2.0.30",
+  "pydantic-settings>=2.3",
+  "duckdb>=1.1",
+  "pyarrow>=16",
+  "pandas>=2.2",
+  "filetype>=1.2",
+  "charset-normalizer>=3.3",
+  "pypdf>=4.3",
+  "pypdfium2>=4.30",
+  "python-docx>=1.1",
+  "python-pptx>=1.0",
+  "openpyxl>=3.1",
+  "pillow>=10.4",
+  "pytesseract>=0.3.13",
+  "httpx>=0.27",
+  "anthropic>=2.0",
+  "mcp>=2.3",
+  "cryptography>=43",
+  "pyjwt[crypto]>=2.9",
+]
+
+[project.optional-dependencies]
+saml = ["python3-saml>=1.16"]
+postgres = ["psycopg[binary]>=3.2"]
+dev = ["pytest>=8", "pytest-timeout>=2.3"]
+
+[project.scripts]
+dah = "dah.cli:main"
+dah-mcp = "dah.mcp_server:main"
+
+[tool.setuptools.packages.find]
+include = ["dah*"]
+
+[tool.setuptools.package-data]
+dah = ["web/static/*", "web/static/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 120
