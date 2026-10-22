@@ -1,10 +1,10 @@
 # Pre word
 
 > DISCLAIMER:
-> This is a proof of concept and a test of claude 5.5 
+> This is a proof of concept and a test of claude opus 5.5 
 > DO NOT USE THIS IN PRODUCTION
 
-The model was prompted with:
+The model was originally prompted with:
 ```
 build a self host docker based data lake house system in cpython:
 
@@ -20,6 +20,8 @@ lastly it needs a way to configure multipe saml/sso authenticated api endpoint t
 for every feature, have a list of tasks in a readme file that you write to after completing a portion of a feature as a status update in a agent-status/feature/status.md sub directory. commit every complete feature to local git.
 do not read any files on this system outside of the folder we are in.
 ```
+and subsequently asked to add clamav scan
+
 This was the result with no manual intervention.
 
 # dah — self-hosted document lakehouse
