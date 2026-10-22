@@ -1,3 +1,27 @@
+# Pre word
+
+> DISCLAIMER:
+> This is a proof of concept and a test of claude 5.5 
+> DO NOT USE THIS IN PRODUCTION
+
+The model was prompted with:
+```
+build a self host docker based data lake house system in cpython:
+
+it needs to be able to injest documents of any type (doc, pdf, png, txt)
+generate metadata about it and convert it to queryable data with ocr or document transcription as needed
+allow for custom transformations and data processing pipelines with python
+the transformations editor should leverage autofill for data objects and metadata fields
+allow for an mcp server and a configurable ML api key for editing pipeline queries
+have it be versioned for files and pipeline queries and allow for retrieval of prior versions and replacement of current version with a previous one
+tools and libraries used should be opensource and have a license ackgnowledgement page
+lastly it needs a way to configure multipe saml/sso authenticated api endpoint that allows for data to be read with access control.
+
+for every feature, have a list of tasks in a readme file that you write to after completing a portion of a feature as a status update in a agent-status/feature/status.md sub directory. commit every complete feature to local git.
+do not read any files on this system outside of the folder we are in.
+```
+This was the result with no manual intervention.
+
 # dah — self-hosted document lakehouse
 
 dah ingests documents of any type, extracts their text and metadata (with OCR where needed), and
