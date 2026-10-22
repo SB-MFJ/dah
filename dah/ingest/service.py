@@ -18,6 +18,7 @@ from ..db import Document, DocumentVersion, session_scope, utcnow
 from ..storage import BlobStore
 from .detect import detect_mime
 from .extractors import extract
+from .scan import scan_file
 
 log = logging.getLogger("dah.ingest")
 
@@ -41,15 +42,19 @@ def ingest_file(
     created_by: str = "admin",
     user_metadata: dict | None = None,
     sync: bool = False,
+    scan: bool = True,
 ) -> dict:
     """Store an upload as a new version of the document at ``logical_path`` (default: filename).
 
     Uploading byte-identical content to a path whose current version already has it is a no-op.
+    With ClamAV configured, the bytes are scanned before they are stored (``scan=False`` when the
+    caller already scanned them); an infected file raises ``InfectedFile`` and is not kept.
     """
     settings = get_settings()
     filename = os.path.basename(filename.replace("\\", "/")) or "upload.bin"
     path = normalize_path(logical_path or filename)
-    sha, size = BlobStore().put_stream(stream, max_bytes=settings.max_upload_mb * 1024 * 1024)
+    check = (lambda p: scan_file(p, filename)) if scan else None
+    sha, size = BlobStore().put_stream(stream, max_bytes=settings.max_upload_mb * 1024 * 1024, check=check)
 
     with session_scope() as s:
         doc = s.scalar(select(Document).where(Document.path == path))

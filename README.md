@@ -105,6 +105,15 @@ WHERE (metadata->>'extraction_method') = 'pdf+ocr';   -- parenthesise: ->> binds
 `POST /api/documents` (multipart, many files) or drag-and-drop in the UI, or
 `dah ingest <files…> --prefix folder/`.
 
+**Virus scanning.** Set `DAH_CLAMAV_URL` (`tcp://host:3310` or `unix:///path/to/clamd.sock`) and
+every upload is streamed to ClamAV's `clamd` before it is stored. An infected file is rejected
+with `422` and never reaches the blob store. In a multi-file upload, all files are scanned
+first, so one infected file rejects the whole request. If clamd can't give a verdict
+(unreachable, timeout, file larger than clamd's `StreamMaxLength`, 100 MB by default), the upload
+fails with `503`, unless `DAH_CLAMAV_FAIL_OPEN=true`. `dah ingest` skips infected files and exits
+with status 1. Raise clamd's `StreamMaxLength` to match `DAH_MAX_UPLOAD_MB`. With Docker:
+`docker compose --profile clamav up -d` and `DAH_CLAMAV_URL=tcp://clamav:3310` in `.env`.
+
 | Type | Extraction |
 |---|---|
 | PDF | text layer per page; pages with less than `DAH_OCR_MIN_PAGE_CHARS` characters are rendered at 300 dpi and OCR'd |
@@ -285,6 +294,10 @@ dependency isn't open source. To regenerate the file:
 | `DAH_OCR_LANGUAGES` | `eng` | Tesseract languages (install more `tesseract-ocr-*` packs in the image) |
 | `DAH_OCR_MIN_PAGE_CHARS` | `25` | PDF pages with less text are OCR'd |
 | `DAH_INGEST_WORKERS` | `2` | background workers |
+| `DAH_MAX_UPLOAD_MB` | `512` | largest accepted upload |
+| `DAH_CLAMAV_URL` | unset (off) | clamd for upload virus scanning: `tcp://host:3310` or `unix:///path` |
+| `DAH_CLAMAV_TIMEOUT_S` | `60` | clamd connection / scan timeout |
+| `DAH_CLAMAV_FAIL_OPEN` | `false` | accept uploads when clamd can't give a verdict |
 | `DAH_PIPELINE_TIMEOUT_S` / `DAH_PIPELINE_MEMORY_MB` | `300` / `2048` | pipeline limits |
 | `DAH_SESSION_TTL_S` | `28800` | SSO session lifetime |
 
@@ -301,6 +314,8 @@ dependency isn't open source. To regenerate the file:
   (`DAH_DATABASE_URL`).
 - Stored secrets (ML API key, OIDC client secrets, SAML SP keys) are encrypted with a key derived
   from `DAH_SECRET_KEY`. If you change that variable, re-enter them.
+- Uploads are only virus-scanned when `DAH_CLAMAV_URL` is set. Files stored before scanning was
+  enabled are not rescanned.
 - Run behind TLS in production. Session cookies are `Secure` when `DAH_PUBLIC_BASE_URL` is
   https.
 

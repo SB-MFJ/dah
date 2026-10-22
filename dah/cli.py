@@ -47,13 +47,21 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "ingest":
         from pathlib import Path
 
+        from .ingest.scan import InfectedFile, ScanError
         from .ingest.service import ingest_file
 
+        rc = 0
         for f in a.files:
             path = Path(f)
-            with path.open("rb") as fh:
-                res = ingest_file(fh, filename=path.name, logical_path=(a.prefix.rstrip("/") + "/" + path.name).lstrip("/"), sync=True)
+            try:
+                with path.open("rb") as fh:
+                    res = ingest_file(fh, filename=path.name, logical_path=(a.prefix.rstrip("/") + "/" + path.name).lstrip("/"), sync=True)
+            except (InfectedFile, ScanError) as e:
+                print(f"{path}: {e}", file=sys.stderr)
+                rc = 1
+                continue
             print(f"{res['path']}: v{res['version']} {res['status']}")
+        return rc
     elif a.cmd == "user":
         return _user_cmd(a)
     elif a.cmd == "licenses":

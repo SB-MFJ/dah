@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     ingest_workers: int = 2
     max_upload_mb: int = 512
     soffice_bin: str = "soffice"
+    # ClamAV daemon for upload scanning: tcp://clamav:3310 or unix:///run/clamav/clamd.ctl (unset = off).
+    clamav_url: str | None = None
+    clamav_timeout_s: float = 60
+    # Accept uploads when clamd can't give a verdict (default: reject them).
+    clamav_fail_open: bool = False
 
     # Pipelines
     pipeline_timeout_s: int = 300

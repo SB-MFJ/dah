@@ -36,6 +36,18 @@ services:
       - pg-data:/var/lib/postgresql/data
     restart: unless-stopped
 
+  # Optional upload virus scanning: `docker compose --profile clamav up -d` and set
+  # DAH_CLAMAV_URL=tcp://clamav:3310 in .env. First start downloads signatures (a few minutes).
+  clamav:
+    image: clamav/clamav:stable
+    profiles: ["clamav"]
+    # clamd rejects streams over StreamMaxLength (100M by default); to scan larger uploads, mount
+    # a clamd.conf with a higher limit at /etc/clamav/clamd.conf.
+    volumes:
+      - clamav-db:/var/lib/clamav
+    restart: unless-stopped
+
 volumes:
   dah-data:
   pg-data:
+  clamav-db:

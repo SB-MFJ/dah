@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from .. import lake
 from ..db import Document, DocumentVersion
-from ..ingest import service
+from ..ingest import scan, service
 from ..storage import BlobStore
 from ..auth.folders import Access
 from .deps import DB, Caller, Perm
@@ -110,8 +110,18 @@ def upload(
         if not access.can(logical, "write"):
             raise HTTPException(403, f"write permission required for {logical!r}")
         targets.append((f, name, logical))
+    if scan.enabled():
+        # Scan every file before storing any, so one infected file rejects the whole upload.
+        for f, name, _ in targets:
+            try:
+                scan.scan_stream(f.file, name)
+            except scan.InfectedFile as e:
+                raise HTTPException(422, str(e))
+            except scan.ScanError as e:
+                raise HTTPException(503, str(e))
+            f.file.seek(0)
     who = access.ident.username
-    return {"items": [service.ingest_file(f.file, name, logical, comment=comment, user_metadata=user_md, sync=sync, created_by=who)
+    return {"items": [service.ingest_file(f.file, name, logical, comment=comment, user_metadata=user_md, sync=sync, created_by=who, scan=False)
                       for f, name, logical in targets]}
 
 

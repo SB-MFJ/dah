@@ -22,3 +22,4 @@ licenses last so the inventory covers every dependency).
 | 09 | Local auth, users, API tokens | [09-local-auth/status.md](09-local-auth/status.md) |
 | 10 | Site login via OIDC / SAML / LDAP | [10-site-sso-ldap/status.md](10-site-sso-ldap/status.md) |
 | 11 | Per-folder permissions | [11-folder-permissions/status.md](11-folder-permissions/status.md) |
+| 12 | Upload virus scanning (ClamAV) | [12-virus-scanning/status.md](12-virus-scanning/status.md) |

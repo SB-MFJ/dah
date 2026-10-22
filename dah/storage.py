@@ -7,7 +7,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Callable
 
 from .config import get_settings
 
@@ -27,8 +27,11 @@ class BlobStore:
     def exists(self, sha256: str) -> bool:
         return self.path(sha256).exists()
 
-    def put_stream(self, src: BinaryIO, max_bytes: int | None = None) -> tuple[str, int]:
-        """Stream into a temp file while hashing, then move into place. Returns (sha256, size)."""
+    def put_stream(self, src: BinaryIO, max_bytes: int | None = None, check: Callable[[Path], None] | None = None) -> tuple[str, int]:
+        """Stream into a temp file while hashing, then move into place. Returns (sha256, size).
+
+        ``check(tmp_path)`` runs before the move; if it raises, nothing is stored.
+        """
         h = hashlib.sha256()
         size = 0
         fd, tmp = tempfile.mkstemp(dir=self.root, prefix=".upload-")
@@ -40,6 +43,8 @@ class BlobStore:
                         raise ValueError(f"upload exceeds {max_bytes} bytes")
                     h.update(chunk)
                     out.write(chunk)
+            if check is not None:
+                check(Path(tmp))
             sha = h.hexdigest()
             dest = self.path(sha)
             if dest.exists():
