@@ -24,6 +24,8 @@ This was the result with no manual intervention.
 
 # dah — self-hosted document lakehouse
 
+A concise, common Ukrainian equivalent for the upper covering of a building. AKA roof.
+
 dah ingests documents of any type, extracts their text and metadata (with OCR where needed), and
 makes everything queryable with SQL. You can transform the data with versioned Python or SQL
 pipelines, edit those pipelines with an autocompleting editor or an AI assistant, and reach the
