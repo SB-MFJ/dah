@@ -13,7 +13,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       tesseract-ocr tesseract-ocr-eng \
-      libxml2-dev libxmlsec1-dev libxmlsec1-openssl libxslt1-dev pkg-config gcc \
+      libxml2-dev libxmlsec1-dev libxmlsec1-openssl libxslt1-dev zlib1g-dev pkg-config gcc \
       curl ca-certificates tini \
  && if [ "$WITH_LIBREOFFICE" = "1" ]; then \
       apt-get install -y --no-install-recommends libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui; \
